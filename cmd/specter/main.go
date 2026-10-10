@@ -120,27 +120,40 @@ Zero configuration, zero wrappers, read-only.`,
 
 			chunks, errs := straceSource.Start(ctx, *target)
 
-			// Line assembler
+			// 1. Line assembler
 			assembler := pipeline.NewLineAssembler(pipeline.DefaultIdleTimeout)
 			lines := assembler.Assemble(ctx, chunks)
 
-			// Stream output to terminal
-			for line := range lines {
-				// Apply --stderr filter
-				if flagStderr && line.FD != 2 {
+			// 2. Multi-line stack trace grouper
+			grouper := pipeline.NewStackTraceGrouper(pipeline.DefaultTraceIdleTimeout)
+			entries := grouper.Group(ctx, lines)
+
+			// 3. Filter configuration
+			minSeverity := pipeline.ParseSeverity(flagLevel)
+			filter := pipeline.NewFilter(pipeline.FilterOptions{
+				MinLevel:   minSeverity,
+				Grep:       flagGrep,
+				OnlyStderr: flagStderr,
+			})
+
+			// 4. Renderer configuration
+			renderer := pipeline.NewRenderer(pipeline.RendererOptions{
+				NoColor:   flagNoColor,
+				Raw:       flagRaw,
+				ForceJSON: flagJSON,
+			})
+
+			// 5. Stream styled entries to terminal
+			for entry := range entries {
+				if !filter.Matches(&entry) {
 					continue
 				}
 
-				// Apply --grep filter
-				if flagGrep != "" && !strings.Contains(line.Text, flagGrep) {
-					continue
-				}
-
-				// Output line
-				if line.IsPartial {
-					fmt.Print(line.Text)
+				rendered := renderer.Render(&entry)
+				if entry.IsPartial {
+					fmt.Print(rendered)
 				} else {
-					fmt.Println(line.Text)
+					fmt.Println(rendered)
 				}
 			}
 
