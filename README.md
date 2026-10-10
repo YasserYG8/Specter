@@ -1,6 +1,6 @@
 # Specter
 
-A zero-configuration developer CLI that attaches to any active server process by port or PID and streams live stdout and stderr directly to the terminal.
+A zero-configuration developer CLI in Go that attaches to any active server process by port or PID and streams live stdout and stderr directly to the terminal.
 
 ```bash
 specter 3000
@@ -21,6 +21,7 @@ Specter eliminates this workflow friction. Given a listening TCP port or a proce
 - **Zero Configuration**: Functions against already running processes. Does not require SDKs, code changes, wrappers, or environment flags.
 - **Strictly Read-Only**: Specter never signals, suspends indefinitely, modifies, or restarts the target process. It does not open incoming network ports.
 - **Local and Private**: All inspection and stream handling occur entirely on the local machine. No telemetry or network transmission is performed.
+- **Standalone Static Binary**: Compiled in Go with zero runtime dependencies. No Node.js, Python, or JVM installation needed.
 - **Honest Diagnostics**: If kernel restrictions (such as `ptrace_scope`) prevent attachment, Specter reports the exact reason and actionable remediation steps.
 
 ---
@@ -31,7 +32,7 @@ Specter eliminates this workflow friction. Given a listening TCP port or a proce
 specter <port|pid>
        │
        ▼
-[CLI Parser]  ─── Parses options (--level, --grep, --source)
+[CLI Parser]  ─── Parses flags (--level, --grep, --source) using spf13/cobra
        │
        ▼
 [Resolver]    ─── Resolves port to PID via lsof / ss; reads /proc/<pid>/
@@ -76,7 +77,7 @@ specter 3000
 specter 18492
 ```
 
-### Options
+### Flags
 
 | Flag | Description |
 | :--- | :--- |
@@ -101,7 +102,7 @@ Specter is engineered as a Linux-first systems tool leveraging Linux kernel inte
 
 ### Dependencies
 
-- Node.js 20 or higher
+- Go 1.24 or higher (for building from source)
 - System utilities: `lsof` (or `iproute2`/`ss`), `strace`
 
 ### Kernel Permissions (ptrace)
@@ -121,19 +122,19 @@ sudo setcap cap_sys_ptrace+ep $(which strace)
 
 ---
 
-## Development & Testing
+## Development & Building
 
-Specter utilizes a fixture-based test suite that allows core parsing, line assembly, and formatting logic to be tested across any platform using pre-recorded syscall traces.
+Specter can be built natively on Linux or cross-compiled directly from Windows for Linux:
 
 ```bash
-# Install dependencies
-npm install
-
 # Run unit and fixture tests
-npm test
+go test ./...
 
-# Build production binary
-npm run build
+# Build local binary
+go build -o specter ./cmd/specter
+
+# Cross-compile for Linux (from Windows PowerShell)
+$env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 ```
 
 ---

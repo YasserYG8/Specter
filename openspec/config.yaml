@@ -1,20 +1,18 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
-
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+context: |
+  Project: Specter
+  Domain: Linux-first systems developer CLI for live server log streaming by port or PID.
+  Tech stack:
+    - Language: Go 1.24+
+    - CLI: github.com/spf13/cobra
+    - Testing: Go standard library `testing` with table-driven tests & fixtures
+    - Subprocesses: `os/exec` with `context.Context`
+    - Output: ANSI terminal formatting (respecting NO_COLOR and non-TTY)
+    - Architecture: Modular pipeline (Resolver -> Source -> Assembler -> Parser -> Filter -> Renderer)
+  Platform: Linux-first (with WSL2 support on Windows development machines).
+  Conventions:
+    - Standard Go layout (`cmd/specter`, `internal/...`)
+    - Pure transforms tested with fixtures in `test/fixtures/`
+    - Read-only: never signal, modify, or terminate target processes
+    - Clean teardown on SIGINT (never leave attached strace processes)
