@@ -16,6 +16,11 @@ import (
 	"github.com/specter-cli/specter/internal/util"
 )
 
+// Options configures the strace source behavior.
+type Options struct {
+	FollowTree bool // Follow child processes and threads via -f
+}
+
 // Source implements source.Source using Linux strace.
 type Source struct {
 	mu            sync.Mutex
@@ -23,11 +28,16 @@ type Source struct {
 	parser        *Parser
 	capturedError string
 	processStatus string
+	options       Options
 }
 
-// NewSource creates a new StraceSource instance.
-func NewSource() *Source {
-	return &Source{}
+// NewSource creates a new StraceSource instance with optional configuration.
+func NewSource(opts ...Options) *Source {
+	s := &Source{}
+	if len(opts) > 0 {
+		s.options = opts[0]
+	}
+	return s
 }
 
 // Name returns the identifier for this source mechanism.
@@ -50,15 +60,20 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 
 	s.parser = NewParser(target.PID)
 
-	// Build strace command: strace -f -qq -xx -s 8192 -e trace=write -p PID
-	cmd := exec.CommandContext(ctx, "strace",
-		"-f",
+	// Build strace command: strace [-f] -qq -xx -s 8192 -e trace=write -p PID
+	args := make([]string, 0, 8)
+	if s.options.FollowTree {
+		args = append(args, "-f")
+	}
+	args = append(args,
 		"-qq",
 		"-xx",
 		"-s", "8192",
 		"-e", "trace=write",
 		"-p", strconv.Itoa(target.PID),
 	)
+
+	cmd := exec.CommandContext(ctx, "strace", args...)
 
 	// Guarantee clean detachment on context cancellation (send SIGINT to strace, avoiding SIGKILL)
 	cmd.Cancel = func() error {

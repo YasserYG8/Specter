@@ -16,6 +16,7 @@ import (
 	"github.com/specter-cli/specter/internal/pipeline"
 	"github.com/specter-cli/specter/internal/resolver"
 	"github.com/specter-cli/specter/internal/source"
+	"github.com/specter-cli/specter/internal/source/selector"
 	"github.com/specter-cli/specter/internal/source/strace"
 	"github.com/specter-cli/specter/internal/util"
 )
@@ -70,11 +71,6 @@ Zero configuration, zero wrappers, read-only.`,
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			// Check ptrace permissions upfront
-			if permErr := strace.CheckPtracePermissions(""); permErr != nil {
-				fmt.Fprintf(os.Stderr, "%s %v\n", color.YellowString("[specter:warning]"), permErr)
-			}
-
 			// Resolve target (try as port first if <= 65535, then as PID)
 			res := resolver.NewDefaultResolver(nil, "")
 			var target *source.Target
@@ -102,6 +98,21 @@ Zero configuration, zero wrappers, read-only.`,
 				fmt.Fprintf(os.Stderr, "%s Target process has stdout/stderr redirected to /dev/null; no console logs are emitted.\n", color.YellowString("[specter:notice]"))
 			}
 
+			// Select capture source
+			sourceSelector := selector.NewSelector(flagSource, flagTree)
+			src, reason, selectErr := sourceSelector.Select(target)
+			if selectErr != nil {
+				return selectErr
+			}
+			defer src.Stop()
+
+			// Check ptrace permissions upfront if strace source is selected
+			if src.Name() == "strace" {
+				if permErr := strace.CheckPtracePermissions(""); permErr != nil {
+					fmt.Fprintf(os.Stderr, "%s %v\n", color.YellowString("[specter:warning]"), permErr)
+				}
+			}
+
 			// Header notice
 			headerTag := color.CyanString("[specter]")
 			cmdSummary := strings.Join(target.Cmdline, " ")
@@ -113,12 +124,9 @@ Zero configuration, zero wrappers, read-only.`,
 			} else {
 				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d (%s)\n", headerTag, target.PID, cmdSummary)
 			}
+			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
 
-			// Start strace source
-			straceSource := strace.NewSource()
-			defer straceSource.Stop()
-
-			chunks, errs := straceSource.Start(ctx, *target)
+			chunks, errs := src.Start(ctx, *target)
 
 			// 1. Line assembler
 			assembler := pipeline.NewLineAssembler(pipeline.DefaultIdleTimeout)
@@ -164,9 +172,11 @@ Zero configuration, zero wrappers, read-only.`,
 			}
 
 			// Check if target process terminated while being traced
-			if status := straceSource.ProcessStatus(); status != "" && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "\n%s Target %s\n", headerTag, status)
-				return nil
+			if statusProvider, ok := src.(interface{ ProcessStatus() string }); ok {
+				if status := statusProvider.ProcessStatus(); status != "" && ctx.Err() == nil {
+					fmt.Fprintf(os.Stderr, "\n%s Target %s\n", headerTag, status)
+					return nil
+				}
 			}
 
 			fmt.Fprintf(os.Stderr, "\n%s Detached from PID %d cleanly.\n", headerTag, target.PID)

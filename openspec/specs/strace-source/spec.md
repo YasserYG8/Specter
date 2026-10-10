@@ -4,7 +4,7 @@
 TBD - created by archiving change core-engine. Update Purpose after archive.
 ## Requirements
 ### Requirement: Strace Attachment and Subprocess Management
-The system SHALL spawn `strace -f -qq -xx -s 8192 -e trace=write -p <PID>` to capture write system calls non-invasively.
+The system SHALL spawn `strace` with `-qq -xx -s 8192 -e trace=write -p <PID>`, including `-f` when process tree tracing is enabled, to capture write system calls non-invasively.
 
 #### Scenario: Successful attachment
 - **WHEN** a valid target PID is provided and permissions allow ptrace
@@ -13,6 +13,10 @@ The system SHALL spawn `strace -f -qq -xx -s 8192 -e trace=write -p <PID>` to ca
 #### Scenario: Ptrace permission denied
 - **WHEN** ptrace attachment fails due to kernel `ptrace_scope`
 - **THEN** the system returns an informative error recommending `sudo` or capability configuration
+
+#### Scenario: Tree tracing enabled
+- **WHEN** `--tree` is specified
+- **THEN** strace is spawned with `-f` to follow child processes and threads across forks
 
 ### Requirement: Syscall Write Hex Decoding
 The parser SHALL parse `write(FD, "HEX", LEN) = RET` lines and decode hex byte sequences into raw chunks.
