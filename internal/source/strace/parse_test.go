@@ -155,4 +155,3 @@ func TestParser_TruncatedOutput(t *testing.T) {
 		t.Errorf("expected 'Hey!', got %q", string(c2.Bytes))
 	}
 }
-
