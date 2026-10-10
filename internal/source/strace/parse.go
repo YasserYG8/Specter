@@ -16,14 +16,14 @@ var (
 	// [pid 1234] or [pid  1234] prefix
 	pidPrefixRegex = regexp.MustCompile(`^\[pid\s+(\d+)\]\s+`)
 
-	// Complete write: write(1, "\x68\x65...", 5) = 5
-	writeCompleteRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)",\s*(\d+)\)\s*=\s*(-?\d+)`)
+	// Complete write: write(1, "\x68\x65...", 5) = 5 or write(1, "\x68\x65"..., 5) = 5
+	writeCompleteRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)"(?:\s*\.\.\.)?\s*,\s*(\d+)\)\s*=\s*(-?\d+)`)
 
-	// Unfinished write: write(1, "\x68\x65..." <unfinished ...>
-	writeUnfinishedRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)"\s*<unfinished \.\.\.>`)
+	// Unfinished write: write(1, "\x68\x65..." <unfinished ...> or write(1, "\x68\x65"... <unfinished ...>
+	writeUnfinishedRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)"(?:\s*\.\.\.)?\s*<unfinished \.\.\.>`)
 
-	// Resumed write with content: <... write resumed> "\x6c\x6f", 5) = 5
-	writeResumedWithContentRegex = regexp.MustCompile(`^<\.\.\.\s*write resumed>\s*"([^"]*)",\s*(\d+)\)\s*=\s*(-?\d+)`)
+	// Resumed write with content: <... write resumed> "\x6c\x6f"..., 5) = 5
+	writeResumedWithContentRegex = regexp.MustCompile(`^<\.\.\.\s*write resumed>\s*"([^"]*)"(?:\s*\.\.\.)?\s*,\s*(\d+)\)\s*=\s*(-?\d+)`)
 
 	// Resumed write without additional content: <... write resumed> ) = 5
 	writeResumedRegex = regexp.MustCompile(`^<\.\.\.\s*write resumed>\s*\)\s*=\s*(-?\d+)`)

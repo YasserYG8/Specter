@@ -62,6 +62,15 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 		ticker := time.NewTicker(25 * time.Millisecond)
 		defer ticker.Stop()
 
+		sendLine := func(l Line) bool {
+			select {
+			case out <- l:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -74,12 +83,16 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 					now := time.Now()
 					for key, sb := range buffers {
 						if len(sb.buf) > 0 {
-							out <- Line{
+							l := Line{
 								Text:      string(sb.buf),
 								FD:        key.fd,
 								PID:       key.pid,
 								IsPartial: true,
 								TS:        now,
+							}
+							if !sendLine(l) {
+								mu.Unlock()
+								return
 							}
 						}
 					}
@@ -102,6 +115,7 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 				}
 
 				// Split on \n
+				aborted := false
 				for {
 					idx := bytes.IndexByte(sb.buf, '\n')
 					if idx == -1 {
@@ -113,7 +127,7 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 						lineBytes = lineBytes[:len(lineBytes)-1]
 					}
 
-					out <- Line{
+					l := Line{
 						Text:      string(lineBytes),
 						FD:        key.fd,
 						PID:       key.pid,
@@ -121,11 +135,19 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 						TS:        sb.lastActive,
 					}
 					sb.buf = sb.buf[idx+1:]
+					if !sendLine(l) {
+						aborted = true
+						break
+					}
+				}
+				if aborted {
+					mu.Unlock()
+					return
 				}
 
 				// Memory protection: if a single line exceeds MaxBufferLength, flush partial chunk
 				if len(sb.buf) >= MaxBufferLength {
-					out <- Line{
+					l := Line{
 						Text:      string(sb.buf),
 						FD:        key.fd,
 						PID:       key.pid,
@@ -133,11 +155,16 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 						TS:        sb.lastActive,
 					}
 					sb.buf = sb.buf[:0]
+					if !sendLine(l) {
+						mu.Unlock()
+						return
+					}
 				}
 				mu.Unlock()
 
 			case now := <-ticker.C:
 				mu.Lock()
+				aborted := false
 				for key, sb := range buffers {
 					if len(sb.buf) > 0 && now.Sub(sb.lastActive) >= la.idleTimeout {
 						// Check if trailing bytes are an incomplete UTF-8 character
@@ -151,7 +178,7 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 						}
 
 						if trailingComplete {
-							out <- Line{
+							l := Line{
 								Text:      string(sb.buf),
 								FD:        key.fd,
 								PID:       key.pid,
@@ -159,10 +186,17 @@ func (la *LineAssembler) Assemble(ctx context.Context, chunks <-chan source.Chun
 								TS:        now,
 							}
 							sb.buf = sb.buf[:0]
+							if !sendLine(l) {
+								aborted = true
+								break
+							}
 						}
 					}
 				}
 				mu.Unlock()
+				if aborted {
+					return
+				}
 			}
 		}
 	}()

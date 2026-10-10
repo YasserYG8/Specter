@@ -60,6 +60,15 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 		"-p", strconv.Itoa(target.PID),
 	)
 
+	// Guarantee clean detachment on context cancellation (send SIGINT to strace, avoiding SIGKILL)
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return cmd.Process.Signal(os.Interrupt)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 3 * time.Second
+
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		errs <- fmt.Errorf("failed to create strace stderr pipe: %w", err)

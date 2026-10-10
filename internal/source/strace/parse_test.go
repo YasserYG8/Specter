@@ -123,3 +123,36 @@ func TestDecodeStraceHex_Truncation(t *testing.T) {
 		t.Errorf("expected 'AB', got %q", string(bytes))
 	}
 }
+
+func TestParser_TruncatedOutput(t *testing.T) {
+	p := NewParser(100)
+	now := time.Now()
+
+	// 1. Truncated complete write with ... outside quotes
+	chunk, err := p.ParseLine(`write(1, "\x48\x65\x6c\x6c\x6f"... , 50) = 5`, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chunk == nil {
+		t.Fatal("expected chunk for truncated write, got nil")
+	}
+	if string(chunk.Bytes) != "Hello" {
+		t.Errorf("expected 'Hello', got %q", string(chunk.Bytes))
+	}
+
+	// 2. Truncated unfinished write with ... outside quotes
+	c1, err := p.ParseLine(`[pid 101] write(1, "\x48\x65"... <unfinished ...>`, now)
+	if err != nil || c1 != nil {
+		t.Fatalf("expected nil chunk for truncated unfinished write, got c1=%v, err=%v", c1, err)
+	}
+
+	// 3. Truncated resumed write with ... outside quotes
+	c2, err := p.ParseLine(`[pid 101] <... write resumed> "\x79\x21"... , 10) = 4`, now)
+	if err != nil || c2 == nil {
+		t.Fatalf("expected chunk for truncated resumed write, got c2=%v, err=%v", c2, err)
+	}
+	if string(c2.Bytes) != "Hey!" {
+		t.Errorf("expected 'Hey!', got %q", string(c2.Bytes))
+	}
+}
+

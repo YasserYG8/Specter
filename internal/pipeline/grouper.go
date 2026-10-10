@@ -96,7 +96,16 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 		ticker := time.NewTicker(30 * time.Millisecond)
 		defer ticker.Stop()
 
-		flushEntry := func(gb *grouperBuffer) {
+		sendEntry := func(e Entry) bool {
+			select {
+			case out <- e:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
+		flushEntry := func(gb *grouperBuffer) bool {
 			if gb.entry != nil {
 				// Re-classify level if not already set
 				if gb.entry.Level == SeverityNone {
@@ -111,10 +120,12 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 				if gb.entry.IsTrace && gb.entry.Level < SeverityError {
 					gb.entry.Level = SeverityError
 				}
-				out <- *gb.entry
+				e := *gb.entry
 				gb.entry = nil
 				gb.inTrace = false
+				return sendEntry(e)
 			}
+			return true
 		}
 
 		for {
@@ -127,7 +138,9 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 					// Input channel closed: flush all pending buffers
 					mu.Lock()
 					for _, gb := range buffers {
-						flushEntry(gb)
+						if !flushEntry(gb) {
+							break
+						}
 					}
 					mu.Unlock()
 					return
@@ -149,8 +162,11 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 
 				if line.IsPartial {
 					// Partial line: flush any pending trace and emit partial immediately
-					flushEntry(gb)
-					out <- Entry{
+					if !flushEntry(gb) {
+						mu.Unlock()
+						return
+					}
+					partialEntry := Entry{
 						Lines:     []string{line.Text},
 						FD:        line.FD,
 						PID:       line.PID,
@@ -159,6 +175,9 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						TS:        now,
 					}
 					mu.Unlock()
+					if !sendEntry(partialEntry) {
+						return
+					}
 					continue
 				}
 
@@ -172,7 +191,10 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 
 				// If we were in a trace and this line does not continue it, flush the trace
 				if gb.inTrace {
-					flushEntry(gb)
+					if !flushEntry(gb) {
+						mu.Unlock()
+						return
+					}
 				}
 
 				// Check if this line starts a new stack trace
@@ -192,7 +214,7 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 				}
 
 				// Normal single-line entry
-				out <- Entry{
+				normalEntry := Entry{
 					Lines:     []string{line.Text},
 					FD:        line.FD,
 					PID:       line.PID,
@@ -202,12 +224,18 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 					TS:        now,
 				}
 				mu.Unlock()
+				if !sendEntry(normalEntry) {
+					return
+				}
 
 			case now := <-ticker.C:
 				mu.Lock()
 				for _, gb := range buffers {
 					if gb.entry != nil && now.Sub(gb.lastActive) >= g.idleTimeout {
-						flushEntry(gb)
+						if !flushEntry(gb) {
+							mu.Unlock()
+							return
+						}
 					}
 				}
 				mu.Unlock()
