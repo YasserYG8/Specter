@@ -63,10 +63,21 @@ func getBinary(t *testing.T, envVar, pkgPath, binaryName string) string {
 	outDir := t.TempDir()
 	outPath := filepath.Join(outDir, binaryName)
 
-	cmd := exec.Command("go", "build", "-o", outPath, pkgPath)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+		t.Fatalf("failed to create directory for %s: %v", outPath, err)
+	}
+
+	target := pkgPath
+	if strings.HasPrefix(target, "./cmd/") {
+		target = "github.com/specter-cli/specter/cmd/" + strings.TrimPrefix(target, "./cmd/")
+	} else if strings.HasPrefix(target, "./test/") {
+		target = "github.com/specter-cli/specter/test/" + strings.TrimPrefix(target, "./test/")
+	}
+
+	cmd := exec.Command("go", "build", "-o", outPath, target)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("failed to build %s from %s: %v\nOutput: %s", binaryName, pkgPath, err, string(out))
+		t.Fatalf("failed to build %s from %s: %v\nOutput: %s", binaryName, target, err, string(out))
 	}
 	return outPath
 }
@@ -177,8 +188,8 @@ func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) bo
 func TestE2E_PortAttachment(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
@@ -231,8 +242,8 @@ func TestE2E_PortAttachment(t *testing.T) {
 func TestE2E_MultilineErrorTrace(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
@@ -280,8 +291,8 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 func TestE2E_FilteringFlags(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
@@ -400,8 +411,8 @@ func TestE2E_FilteringFlags(t *testing.T) {
 func TestE2E_TreeTracer(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
@@ -446,8 +457,8 @@ func TestE2E_TreeTracer(t *testing.T) {
 func TestE2E_CleanDetachment(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
@@ -485,8 +496,8 @@ func TestE2E_CleanDetachment(t *testing.T) {
 func TestE2E_TargetExitDetection(t *testing.T) {
 	requireLinux(t)
 
-	specterBin := getBinary(t, "SPECTER_BIN", "./cmd/specter", "specter")
-	serverBin := getBinary(t, "TESTSERVER_BIN", "./test/e2e/testserver", "testserver")
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
 
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
