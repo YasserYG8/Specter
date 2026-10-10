@@ -13,10 +13,10 @@ import (
 
 // Source implements source.Source by following regular log files attached to fd 1 and/or fd 2.
 type Source struct {
-	mu          sync.Mutex
-	cancel      context.CancelFunc
-	files       []*os.File
-	pollPeriod  time.Duration
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	files      []*os.File
+	pollPeriod time.Duration
 }
 
 // NewSource creates a new FileTailSource instance.
@@ -93,6 +93,10 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 			return
 		}
 
+		// Reusable timer for zero-allocation polling on EOF
+		timer := time.NewTimer(s.pollPeriod)
+		defer timer.Stop()
+
 		buf := make([]byte, 4096)
 		for {
 			select {
@@ -119,8 +123,16 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 
 			if readErr != nil {
 				if readErr == io.EOF {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(s.pollPeriod)
+
 					select {
-					case <-time.After(s.pollPeriod):
+					case <-timer.C:
 					case <-ctx.Done():
 						return
 					}
