@@ -97,7 +97,15 @@ func (r *PortResolver) ResolvePortToPID(ctx context.Context, port int) (int, err
 		}
 	}
 
-	return 0, fmt.Errorf("%w: %d", util.ErrNoProcessFound, port)
+	// Enumerate active listening ports to provide actionable diagnostic feedback
+	activePorts, _ := r.DiscoverListeningPorts(ctx)
+	ranked, topSuggestion := RankSuggestions(port, activePorts)
+
+	return 0, &NoProcessOnPortError{
+		RequestedPort: port,
+		ActivePorts:   ranked,
+		Suggestion:    topSuggestion,
+	}
 }
 
 func (r *PortResolver) resolveWithLsof(ctx context.Context, port int) ([]int, error) {

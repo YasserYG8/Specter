@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -74,20 +75,29 @@ Zero configuration, zero wrappers, read-only.`,
 			// Resolve target (try as port first if <= 65535, then as PID)
 			res := resolver.NewDefaultResolver(nil, "")
 			var target *source.Target
+			var savedPortErr error
 
 			if val <= 65535 {
 				t, portErr := res.ResolvePort(ctx, val)
 				if portErr == nil {
 					target = t
-				} else if !strings.Contains(portErr.Error(), util.ErrNoProcessFound.Error()) {
+				} else if !strings.Contains(portErr.Error(), util.ErrNoProcessFound.Error()) && !errors.Is(portErr, util.ErrNoProcessFound) {
 					// Surface permission or tool errors immediately
 					return portErr
+				} else {
+					savedPortErr = portErr
 				}
 			}
 
 			if target == nil {
 				t, pidErr := res.ResolvePID(ctx, val)
 				if pidErr != nil {
+					var noProcErr *resolver.NoProcessOnPortError
+					if savedPortErr != nil && errors.As(savedPortErr, &noProcErr) {
+						fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
+						cmd.SilenceErrors = true
+						return noProcErr
+					}
 					return fmt.Errorf("could not find listening port or active process for: %d (%w)", val, pidErr)
 				}
 				target = t
