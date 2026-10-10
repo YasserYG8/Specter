@@ -125,9 +125,9 @@ func main() {
 
 func runChildWorker() {
 	// Worker child process emits identifiable logs and exits
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 15; i++ {
 		fmt.Fprintf(os.Stdout, `{"level":"info","msg":"child worker active","worker_pid":%d,"step":%d}`+"\n", os.Getpid(), i)
 		os.Stdout.Sync()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
