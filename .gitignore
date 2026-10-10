@@ -33,3 +33,9 @@ Thumbs.db
 # Python artifacts
 __pycache__/
 *.pyc
+
+# AI assistant directories
+.claude/
+.codex/
+.gemini/
+

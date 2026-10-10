@@ -40,7 +40,10 @@ jobs:
       - name: Run Go vet
         run: go vet ./...
 
-      - name: Run unit & regression tests (with race detector)
+      - name: Configure kernel ptrace permissions
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
+      - name: Run unit, E2E & stress tests (with race detector)
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
   build:
