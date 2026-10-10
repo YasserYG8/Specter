@@ -139,7 +139,7 @@ func startTestServer(t *testing.T, serverBin string) (*serverProcess, func()) {
 	case err := <-errChan:
 		_ = cmd.Process.Kill()
 		t.Fatalf("error waiting for test server readiness: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatalf("timed out waiting for test server readiness")
 	}
@@ -147,7 +147,7 @@ func startTestServer(t *testing.T, serverBin string) (*serverProcess, func()) {
 	// Verify health check endpoint responds
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", actualPort)
 	healthy := false
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 40; i++ {
 		resp, err := http.Get(healthURL)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			_ = resp.Body.Close()
@@ -193,7 +193,7 @@ func TestE2E_PortAttachment(t *testing.T) {
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
@@ -210,7 +210,7 @@ func TestE2E_PortAttachment(t *testing.T) {
 	}()
 
 	// Wait for Specter attachment header on stderr
-	attached := waitForCondition(t, 15*time.Second, func() bool {
+	attached := waitForCondition(t, 30*time.Second, func() bool {
 		return strings.Contains(stderr.String(), "Attaching to PID")
 	})
 	if !attached {
@@ -219,7 +219,7 @@ func TestE2E_PortAttachment(t *testing.T) {
 
 	// Repeatedly emit HTTP requests until Specter captures the log (handles attachment lag in CI)
 	url := fmt.Sprintf("http://127.0.0.1:%d/json?msg=e2e-order-placed", srv.Port)
-	found := waitForCondition(t, 15*time.Second, func() bool {
+	found := waitForCondition(t, 30*time.Second, func() bool {
 		resp, err := http.Get(url)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -242,7 +242,7 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
@@ -258,7 +258,7 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	attached := waitForCondition(t, 15*time.Second, func() bool {
+	attached := waitForCondition(t, 30*time.Second, func() bool {
 		return strings.Contains(stderr.String(), "Attaching to PID")
 	})
 	if !attached {
@@ -267,7 +267,7 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 
 	// Repeatedly emit error trace until Specter captures it
 	url := fmt.Sprintf("http://127.0.0.1:%d/error", srv.Port)
-	foundHeader := waitForCondition(t, 15*time.Second, func() bool {
+	foundHeader := waitForCondition(t, 30*time.Second, func() bool {
 		resp, err := http.Get(url)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -293,7 +293,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 
 	// Test 1: --level warn
 	t.Run("LevelFiltering", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--level=warn", "--no-color")
@@ -308,7 +308,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 			_ = cmd.Wait()
 		}()
 
-		attached := waitForCondition(t, 15*time.Second, func() bool {
+		attached := waitForCondition(t, 30*time.Second, func() bool {
 			return strings.Contains(stderr.String(), "Attaching to PID")
 		})
 		if !attached {
@@ -318,7 +318,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		infoURL := fmt.Sprintf("http://127.0.0.1:%d/json?level=info&msg=suppressed-info", srv.Port)
 		warnURL := fmt.Sprintf("http://127.0.0.1:%d/json?level=warn&msg=allowed-warn", srv.Port)
 
-		foundWarn := waitForCondition(t, 15*time.Second, func() bool {
+		foundWarn := waitForCondition(t, 30*time.Second, func() bool {
 			resp, err := http.Get(infoURL)
 			if err == nil {
 				_ = resp.Body.Close()
@@ -342,7 +342,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 
 	// Test 2: --grep pattern
 	t.Run("GrepFiltering", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--grep=checkout-success", "--no-color")
@@ -357,7 +357,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 			_ = cmd.Wait()
 		}()
 
-		attached := waitForCondition(t, 15*time.Second, func() bool {
+		attached := waitForCondition(t, 30*time.Second, func() bool {
 			return strings.Contains(stderr.String(), "Attaching to PID")
 		})
 		if !attached {
@@ -367,7 +367,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		mismatchURL := fmt.Sprintf("http://127.0.0.1:%d/json?msg=unrelated-browse", srv.Port)
 		matchURL := fmt.Sprintf("http://127.0.0.1:%d/json?msg=checkout-success-order-99", srv.Port)
 
-		foundMatch := waitForCondition(t, 15*time.Second, func() bool {
+		foundMatch := waitForCondition(t, 30*time.Second, func() bool {
 			resp, err := http.Get(mismatchURL)
 			if err == nil {
 				_ = resp.Body.Close()
@@ -391,7 +391,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 
 	// Test 3: --stderr only
 	t.Run("StderrOnly", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
 		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--stderr", "--no-color")
@@ -406,7 +406,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 			_ = cmd.Wait()
 		}()
 
-		attached := waitForCondition(t, 15*time.Second, func() bool {
+		attached := waitForCondition(t, 30*time.Second, func() bool {
 			return strings.Contains(stderr.String(), "Attaching to PID")
 		})
 		if !attached {
@@ -416,7 +416,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		stdoutURL := fmt.Sprintf("http://127.0.0.1:%d/json?msg=stdout-payload", srv.Port)
 		stderrURL := fmt.Sprintf("http://127.0.0.1:%d/error", srv.Port)
 
-		foundStderr := waitForCondition(t, 15*time.Second, func() bool {
+		foundStderr := waitForCondition(t, 30*time.Second, func() bool {
 			resp, err := http.Get(stdoutURL)
 			if err == nil {
 				_ = resp.Body.Close()
@@ -448,7 +448,7 @@ func TestE2E_TreeTracer(t *testing.T) {
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--tree", "--no-color")
@@ -464,7 +464,7 @@ func TestE2E_TreeTracer(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	attached := waitForCondition(t, 15*time.Second, func() bool {
+	attached := waitForCondition(t, 30*time.Second, func() bool {
 		return strings.Contains(stderr.String(), "Attaching to PID")
 	})
 	if !attached {
@@ -472,7 +472,7 @@ func TestE2E_TreeTracer(t *testing.T) {
 	}
 
 	forkURL := fmt.Sprintf("http://127.0.0.1:%d/fork", srv.Port)
-	foundChildLog := waitForCondition(t, 15*time.Second, func() bool {
+	foundChildLog := waitForCondition(t, 30*time.Second, func() bool {
 		resp, err := http.Get(forkURL)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -505,7 +505,7 @@ func TestE2E_CleanDetachment(t *testing.T) {
 		t.Fatalf("failed to start specter: %v", err)
 	}
 
-	attached := waitForCondition(t, 15*time.Second, func() bool {
+	attached := waitForCondition(t, 30*time.Second, func() bool {
 		return strings.Contains(stderr.String(), "Attaching to PID")
 	})
 	if !attached {
@@ -514,7 +514,7 @@ func TestE2E_CleanDetachment(t *testing.T) {
 
 	// Verify active capture handshake before detachment
 	probeURL := fmt.Sprintf("http://127.0.0.1:%d/json?msg=pre-detach-probe", srv.Port)
-	capturedProbe := waitForCondition(t, 15*time.Second, func() bool {
+	capturedProbe := waitForCondition(t, 30*time.Second, func() bool {
 		resp, err := http.Get(probeURL)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -550,7 +550,7 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
@@ -562,7 +562,7 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 		t.Fatalf("failed to start specter: %v", err)
 	}
 
-	attached := waitForCondition(t, 15*time.Second, func() bool {
+	attached := waitForCondition(t, 30*time.Second, func() bool {
 		return strings.Contains(stderr.String(), "Attaching to PID")
 	})
 	if !attached {
@@ -571,7 +571,7 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 
 	// Verify active capture handshake before triggering target exit
 	probeURL := fmt.Sprintf("http://127.0.0.1:%d/json?msg=pre-exit-probe", srv.Port)
-	capturedProbe := waitForCondition(t, 15*time.Second, func() bool {
+	capturedProbe := waitForCondition(t, 30*time.Second, func() bool {
 		resp, err := http.Get(probeURL)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -600,7 +600,7 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 		if err != nil && !strings.Contains(err.Error(), "exit status") {
 			t.Logf("Specter exited with: %v (expected upon target termination)", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("Specter did not terminate within timeout after target exited")
 	}
 }

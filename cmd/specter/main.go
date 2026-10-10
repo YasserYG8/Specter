@@ -228,6 +228,21 @@ Zero configuration, zero wrappers, read-only.`,
 
 			chunks, errs := src.Start(ctx, *target)
 
+			// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
+			if flagSource == "" && src.Name() != "strace" {
+				select {
+				case err, ok := <-errs:
+					if ok && err != nil {
+						fmt.Fprintf(os.Stderr, "%s Auto-detected source '%s' unavailable (%v); falling back to strace\n",
+							headerTag, src.Name(), err)
+						src = strace.NewSource(strace.Options{FollowTree: flagTree})
+						chunks, errs = src.Start(ctx, *target)
+					}
+				default:
+					// Started normally
+				}
+			}
+
 			// 1. Line assembler
 			assembler := pipeline.NewLineAssembler(pipeline.DefaultIdleTimeout)
 			lines := assembler.Assemble(ctx, chunks)

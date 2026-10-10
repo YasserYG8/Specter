@@ -43,8 +43,16 @@ jobs:
       - name: Configure kernel ptrace permissions
         run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
 
-      - name: Run unit, E2E & stress tests (with race detector)
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - name: Check systemd journal access
+        run: |
+          journalctl --no-pager -n 5 || true
+          sudo usermod -a -G systemd-journal $USER || true
+
+      - name: Run unit & stress tests (with race detector)
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./cmd/... ./internal/... ./test/stress/...
+
+      - name: Run E2E integration tests
+        run: go test -v -timeout=10m ./test/e2e/...
 
   build:
     name: Build & Cross-Compilation

@@ -24,6 +24,21 @@ func TestExtractSystemdUnit(t *testing.T) {
 	if unit2 != "" {
 		t.Errorf("expected empty string for non-service slice, got %q", unit2)
 	}
+
+	// CI runner agent units should be ignored
+	sampleRunner := `0::/system.slice/hosted-compute-agent.service
+`
+	unitRunner := ExtractSystemdUnit(sampleRunner)
+	if unitRunner != "" {
+		t.Errorf("expected empty string for CI runner unit, got %q", unitRunner)
+	}
+
+	sampleGitHub := `0::/system.slice/actions.runner.service
+`
+	unitGitHub := ExtractSystemdUnit(sampleGitHub)
+	if unitGitHub != "" {
+		t.Errorf("expected empty string for actions runner unit, got %q", unitGitHub)
+	}
 }
 
 func TestDetectSystemdUnit_MockProc(t *testing.T) {
