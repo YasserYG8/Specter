@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -79,6 +80,22 @@ func (r *Renderer) Render(entry *Entry) string {
 	case SeverityWarn:
 		return color.YellowString(text)
 	case SeverityInfo:
+		// Style HTTP access log lines (2xx subtle green, 3xx subtle cyan)
+		if m := httpStatusRegex.FindStringSubmatch(text); len(m) > 0 {
+			codeStr := m[1]
+			if codeStr == "" && len(m) > 2 {
+				codeStr = m[2]
+			}
+			if code, err := strconv.Atoi(codeStr); err == nil {
+				if code >= 200 && code < 300 {
+					return color.GreenString(text)
+				}
+				if code >= 300 && code < 400 {
+					return color.CyanString(text)
+				}
+			}
+			return color.CyanString(text)
+		}
 		// Subtly highlight [INFO] token if present, else plain
 		if strings.Contains(strings.ToLower(text), "info") {
 			return color.CyanString(text)

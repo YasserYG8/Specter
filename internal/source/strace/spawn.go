@@ -107,7 +107,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 		defer close(chunks)
 		defer close(errs)
 
-		s.readLoop(stderr, chunks)
+		s.readLoop(ctx, stderr, chunks)
 
 		// Await command termination
 		waitErr := cmd.Wait()
@@ -145,7 +145,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	return chunks, errs
 }
 
-func (s *Source) readLoop(r io.Reader, chunks chan<- source.Chunk) {
+func (s *Source) readLoop(ctx context.Context, r io.Reader, chunks chan<- source.Chunk) {
 	scanner := bufio.NewScanner(r)
 	// Buffer up to 1MB per strace line
 	buf := make([]byte, 64*1024)
@@ -178,8 +178,8 @@ func (s *Source) readLoop(r io.Reader, chunks chan<- source.Chunk) {
 		if chunk != nil {
 			select {
 			case chunks <- *chunk:
-			default:
-				// Avoid blocking if consumer is slow (backpressure drop)
+			case <-ctx.Done():
+				return
 			}
 		}
 	}

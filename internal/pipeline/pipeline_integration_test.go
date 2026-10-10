@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/specter-cli/specter/internal/source"
 )
 
@@ -230,5 +231,103 @@ func TestPipeline_EndToEnd(t *testing.T) {
 	if !strings.Contains(errorTrace, "at getUserById (/app/server.js:42:15)") ||
 		!strings.Contains(errorTrace, "at handleRequest (/app/router.js:18:9)") {
 		t.Errorf("expected all stack frames to be preserved in trace output, got: %s", errorTrace)
+	}
+}
+
+func TestGrouper_PythonTracebackCompleteWithFinalException(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	grouper := NewStackTraceGrouper(100 * time.Millisecond)
+	in := make(chan Line, 10)
+	out := grouper.Group(ctx, in)
+
+	now := time.Now()
+	in <- Line{Text: "Traceback (most recent call last):", FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `  File "/app/server.py", line 42, in handle_request`, FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `    process_data(payload)`, FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `  File "/app/utils.py", line 18, in process_data`, FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `    raise ValueError("invalid configuration: key missing")`, FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `ValueError: invalid configuration: key missing`, FD: 2, PID: 42, TS: now}
+	in <- Line{Text: `Worker process 42 recovered`, FD: 2, PID: 42, TS: now}
+
+	close(in)
+
+	var entries []Entry
+	for e := range out {
+		entries = append(entries, e)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (1 complete python trace + 1 normal recovered line), got %d", len(entries))
+	}
+
+	trace := entries[0]
+	if !trace.IsTrace {
+		t.Errorf("expected trace.IsTrace to be true")
+	}
+	if trace.Level != SeverityError {
+		t.Errorf("expected SeverityError, got %v", trace.Level)
+	}
+	if len(trace.Lines) != 6 {
+		t.Fatalf("expected 6 lines in python trace including final unindented exception, got %d: %v", len(trace.Lines), trace.Lines)
+	}
+	lastLine := trace.Lines[len(trace.Lines)-1]
+	if lastLine != `ValueError: invalid configuration: key missing` {
+		t.Errorf("expected final line to be unindented exception, got %q", lastLine)
+	}
+
+	normal := entries[1]
+	if normal.IsTrace {
+		t.Errorf("expected recovered worker line to not be a trace")
+	}
+	if len(normal.Lines) != 1 || normal.Lines[0] != "Worker process 42 recovered" {
+		t.Errorf("unexpected normal entry: %v", normal)
+	}
+}
+
+func TestParser_BenignErrorPhrases(t *testing.T) {
+	benignLines := []string{
+		"Build succeeded: 0 errors, 0 warnings",
+		"Transaction committed without error",
+		"Connection closed with no error",
+	}
+
+	for _, line := range benignLines {
+		level := DetectSeverity(line)
+		if level == SeverityError {
+			t.Errorf("expected line %q to not be classified as SeverityError, got %v", line, level)
+		}
+		if isTraceHeader(line) {
+			t.Errorf("expected line %q to not be classified as trace header", line)
+		}
+	}
+}
+
+func TestRenderer_HTTPStatusStyling(t *testing.T) {
+	oldNoColor := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = oldNoColor }()
+
+	renderer := NewRenderer(RendererOptions{NoColor: false})
+
+	// 2xx status -> Green
+	entry200 := &Entry{
+		Lines: []string{`127.0.0.1 - - [10/Oct/2026:13:00:00] "GET /api/v1/users HTTP/1.1" 200 1024`},
+		Level: SeverityInfo,
+	}
+	rendered200 := renderer.Render(entry200)
+	if !HasANSI(rendered200) {
+		t.Errorf("expected ANSI color in rendered 200 HTTP access log, got plain: %q", rendered200)
+	}
+
+	// 3xx status -> Cyan
+	entry301 := &Entry{
+		Lines: []string{`127.0.0.1 - - [10/Oct/2026:13:00:00] "GET /old-path HTTP/1.1" 301 0`},
+		Level: SeverityInfo,
+	}
+	rendered301 := renderer.Render(entry301)
+	if !HasANSI(rendered301) {
+		t.Errorf("expected ANSI color in rendered 301 HTTP access log, got plain: %q", rendered301)
 	}
 }

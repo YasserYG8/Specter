@@ -30,11 +30,12 @@ func (e *Entry) Text() string {
 
 var (
 	// Stack trace frame matchers
-	nodeFrameRegex    = regexp.MustCompile(`^\s+at\s+(?:async\s+)?[^\s(]+(?:\s*\(.*\))?`)
-	javaFrameRegex    = regexp.MustCompile(`^\s+at\s+[a-zA-Z0-9_$.]+\([a-zA-Z0-9_$.]+:\d+\)|^\s*Caused by:|\s*\.\.\.\s+\d+\s+more`)
-	pythonTraceHeader = regexp.MustCompile(`^Traceback \(most recent call last\):`)
-	pythonFrameRegex  = regexp.MustCompile(`^\s+File\s+"[^"]+",\s+line\s+\d+`)
-	goPanicRegex      = regexp.MustCompile(`^panic:\s+|goroutine\s+\d+\s+\[`)
+	nodeFrameRegex       = regexp.MustCompile(`^\s+at\s+(?:async\s+)?[^\s(]+(?:\s*\(.*\))?`)
+	javaFrameRegex       = regexp.MustCompile(`^\s+at\s+[a-zA-Z0-9_$.]+\([a-zA-Z0-9_$.]+:\d+\)|^\s*Caused by:|\s*\.\.\.\s+\d+\s+more`)
+	pythonTraceHeader    = regexp.MustCompile(`^Traceback \(most recent call last\):`)
+	pythonFrameRegex     = regexp.MustCompile(`^\s+File\s+"[^"]+",\s+line\s+\d+`)
+	pythonExceptionRegex = regexp.MustCompile(`^(?:[a-zA-Z0-9_.]+\.)?[A-Z][a-zA-Z0-9_]*(?:Error|Exception|Fault|Warning|Interrupt|Exit|Iteration|Failure|Timeout)(?::.*)?$`)
+	goPanicRegex         = regexp.MustCompile(`^panic:\s+|goroutine\s+\d+\s+\[`)
 )
 
 // isTraceHeader detects lines that initiate an error stack trace.
@@ -44,7 +45,8 @@ func isTraceHeader(line string) bool {
 		return true
 	}
 	cleanLower := strings.ToLower(clean)
-	if (strings.Contains(cleanLower, "error:") || strings.Contains(cleanLower, "exception:") || strings.HasPrefix(cleanLower, "error")) &&
+	sanitized := benignErrorRegex.ReplaceAllString(cleanLower, "")
+	if (strings.Contains(sanitized, "error:") || strings.Contains(sanitized, "exception:") || strings.HasPrefix(strings.TrimSpace(sanitized), "error")) &&
 		!strings.HasPrefix(clean, " ") && !strings.HasPrefix(clean, "\t") {
 		return true
 	}
@@ -54,7 +56,7 @@ func isTraceHeader(line string) bool {
 // isTraceContinuation checks if a line is a stack frame continuation.
 func isTraceContinuation(line string) bool {
 	clean := StripANSI(line)
-	if nodeFrameRegex.MatchString(clean) || javaFrameRegex.MatchString(clean) || pythonFrameRegex.MatchString(clean) {
+	if nodeFrameRegex.MatchString(clean) || javaFrameRegex.MatchString(clean) || pythonFrameRegex.MatchString(clean) || pythonExceptionRegex.MatchString(clean) {
 		return true
 	}
 	// Indented lines following a trace header often belong to the trace
@@ -185,6 +187,12 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 				if gb.inTrace && isTraceContinuation(line.Text) {
 					gb.entry.Lines = append(gb.entry.Lines, line.Text)
 					gb.entry.IsTrace = true
+					if pythonExceptionRegex.MatchString(StripANSI(line.Text)) {
+						if !flushEntry(gb) {
+							mu.Unlock()
+							return
+						}
+					}
 					mu.Unlock()
 					continue
 				}

@@ -61,6 +61,9 @@ var (
 	warnTokenRegex  = regexp.MustCompile(`(?i)\b(?:warn|warning)\b|\[(?:WARN|WARNING)\]|level=(?:warn|warning)`)
 	infoTokenRegex  = regexp.MustCompile(`(?i)\b(?:info)\b|\[INFO\]|level=info`)
 	debugTokenRegex = regexp.MustCompile(`(?i)\b(?:debug|trace)\b|\[(?:DEBUG|TRACE)\]|level=(?:debug|trace)`)
+
+	// Benign phrases containing the word "error" that should not trigger error classification
+	benignErrorRegex = regexp.MustCompile(`(?i)\b(?:no errors?|0 errors?|without errors?)\b`)
 )
 
 // HasANSI checks if the string contains terminal ANSI escape sequences.
@@ -76,7 +79,6 @@ func StripANSI(s string) string {
 // DetectSeverity examines line tokens, HTTP status codes, and tags to classify its log level.
 func DetectSeverity(line string) Severity {
 	clean := StripANSI(line)
-	cleanLower := strings.ToLower(clean)
 
 	// 1. Check HTTP access log status codes
 	if m := httpStatusRegex.FindStringSubmatch(clean); len(m) > 0 {
@@ -97,8 +99,12 @@ func DetectSeverity(line string) Severity {
 		}
 	}
 
+	// Remove benign phrases (e.g. "no error", "0 errors", "without error") before error evaluation
+	sanitized := benignErrorRegex.ReplaceAllString(clean, "")
+	sanitizedLower := strings.ToLower(sanitized)
+
 	// 2. Explicit tokens (checked in order of importance: Error > Warn > Info > Debug)
-	if errorTokenRegex.MatchString(clean) {
+	if errorTokenRegex.MatchString(sanitized) {
 		return SeverityError
 	}
 	if warnTokenRegex.MatchString(clean) {
@@ -112,7 +118,7 @@ func DetectSeverity(line string) Severity {
 	}
 
 	// 3. Fallback checks for keywords like Exception or Failed
-	if strings.Contains(cleanLower, "exception:") || strings.Contains(cleanLower, "failed") || strings.Contains(cleanLower, "failure") {
+	if strings.Contains(sanitizedLower, "exception:") || strings.Contains(sanitizedLower, "failed") || strings.Contains(sanitizedLower, "failure") {
 		return SeverityError
 	}
 
