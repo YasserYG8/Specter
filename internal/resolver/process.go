@@ -124,3 +124,8 @@ func (dr *DefaultResolver) ResolvePort(ctx context.Context, port int) (*source.T
 func (dr *DefaultResolver) ResolvePID(ctx context.Context, pid int) (*source.Target, error) {
 	return dr.inspector.InspectPID(ctx, pid)
 }
+
+// DiscoverListeningPorts discovers all currently listening TCP ports using ss or lsof.
+func (dr *DefaultResolver) DiscoverListeningPorts(ctx context.Context) ([]ListeningPort, error) {
+	return dr.portResolver.DiscoverListeningPorts(ctx)
+}

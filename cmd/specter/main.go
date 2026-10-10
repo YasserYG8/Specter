@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -37,6 +38,12 @@ var (
 	flagSource  string
 	flagTree    bool
 	flagNoColor bool
+
+	// portDiscoveryFunc discovers active listening TCP ports for autocompletion.
+	portDiscoveryFunc = func(ctx context.Context) ([]resolver.ListeningPort, error) {
+		res := resolver.NewPortResolver(nil)
+		return res.DiscoverListeningPorts(ctx)
+	}
 )
 
 // buildVersionString formats complete build and runtime provenance.
@@ -53,9 +60,83 @@ func newRootCmd() *cobra.Command {
 and streams its stdout and stderr directly to your terminal.
 
 Zero configuration, zero wrappers, read-only.`,
+		Example: `  # Attach to an active HTTP/API server by listening port
+  specter 3000
+  specter 8080
+
+  # Attach directly to a known process ID (PID)
+  specter 14280
+
+  # Filter logs by minimum severity level (debug, info, warn, error)
+  specter 3000 --level warn
+  specter 3000 --level error
+
+  # Filter logs matching text or regex pattern
+  specter 3000 --grep "GET /api"
+  specter 3000 --grep "auth|failed|token"
+
+  # Stream only stderr (e.g. unhandled exceptions and crashes)
+  specter 3000 --stderr
+
+  # Trace multi-process architectures (e.g. Node cluster, Gunicorn, Celery)
+  specter 8000 --tree
+
+  # Force a specific log source capture engine
+  specter 3000 --source strace
+  specter 3000 --source file
+
+  # Stream raw JSON lines or disable ANSI color formatting
+  specter 3000 --json
+  specter 3000 --no-color`,
 		Version:      buildVersionString(),
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
+		ValidArgsFunction: func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) != 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+
+			ports, err := portDiscoveryFunc(ctx)
+			if err != nil || len(ports) == 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+
+			var completions []string
+			for _, p := range ports {
+				portStr := strconv.Itoa(p.Port)
+				if toComplete != "" && !strings.HasPrefix(portStr, toComplete) {
+					continue
+				}
+
+				cleanProc := strings.Map(func(r rune) rune {
+					if r == '\t' || r == '\n' || r == '\r' {
+						return ' '
+					}
+					return r
+				}, p.ProcessName)
+				cleanProc = strings.TrimSpace(cleanProc)
+
+				var desc string
+				if p.IsProtected {
+					desc = "protected process (run with sudo)"
+				} else if cleanProc != "" && p.PID > 0 {
+					desc = fmt.Sprintf("%s (PID %d)", cleanProc, p.PID)
+				} else if cleanProc != "" {
+					desc = cleanProc
+				} else if p.PID > 0 {
+					desc = fmt.Sprintf("PID %d", p.PID)
+				} else {
+					desc = "listening port"
+				}
+
+				completions = append(completions, fmt.Sprintf("%s\t%s", portStr, desc))
+			}
+
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagNoColor {
 				color.NoColor = true
@@ -221,6 +302,27 @@ Zero configuration, zero wrappers, read-only.`,
 		},
 	}
 	cmd.AddCommand(versionCmd)
+	cmd.AddCommand(newCompletionCmd(cmd))
+
+	_ = cmd.RegisterFlagCompletionFunc("source", func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		sources := []string{
+			"strace\tDirect syscall snooping via ptrace",
+			"file\tLog file tailing (/proc/<pid>/fd)",
+			"docker\tDocker container stdout/stderr logs",
+			"journal\tSystemd journald service logs",
+		}
+		return sources, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	_ = cmd.RegisterFlagCompletionFunc("level", func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		levels := []string{
+			"debug\tShow all messages including debug traces",
+			"info\tShow info, warn, and error messages",
+			"warn\tShow warnings and error messages only",
+			"error\tShow error messages only",
+		}
+		return levels, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	return cmd
 }
