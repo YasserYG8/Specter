@@ -50,8 +50,6 @@ nfpms:
     maintainer: Specter Maintainers
     description: Live stdout/stderr stream from any server by port or PID
     license: MIT
-    builds:
-      - specter
     formats:
       - deb
       - rpm
