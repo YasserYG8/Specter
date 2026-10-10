@@ -28,3 +28,31 @@ func TestCLI_NegativePort(t *testing.T) {
 		t.Fatal("expected error for negative port/pid argument, got nil")
 	}
 }
+
+func TestBuildVersionString(t *testing.T) {
+	str := buildVersionString()
+	if str == "" {
+		t.Fatal("expected non-empty version string")
+	}
+	if !bytes.Contains([]byte(str), []byte(version)) {
+		t.Errorf("expected version %q in string, got %s", version, str)
+	}
+	if !bytes.Contains([]byte(str), []byte("commit:")) {
+		t.Errorf("expected commit marker in version string, got %s", str)
+	}
+	if !bytes.Contains([]byte(str), []byte("built at:")) {
+		t.Errorf("expected built at marker in version string, got %s", str)
+	}
+}
+
+func TestCLI_VersionSubcommand(t *testing.T) {
+	cmd := newRootCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"version"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("unexpected error executing version command: %v", err)
+	}
+}

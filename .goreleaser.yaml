@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: specter
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: specter
+    main: ./cmd/specter
+    binary: specter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=goreleaser
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE*
+      - README*
+
+nfpms:
+  - id: packages
+    package_name: specter
+    vendor: Specter CLI
+    homepage: https://github.com/YasserYG8/Specter
+    maintainer: Specter Maintainers
+    description: Live stdout/stderr stream from any server by port or PID
+    license: MIT
+    builds:
+      - specter
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    recommends:
+      - strace
+      - lsof
+      - iproute2
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch

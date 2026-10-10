@@ -6,6 +6,8 @@
 *.dylib
 /specter
 /specter.exe
+/bin/
+/dist/
 
 # Test binary, built with `go test -c`
 *.test

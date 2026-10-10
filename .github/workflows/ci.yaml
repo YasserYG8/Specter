@@ -68,3 +68,11 @@ jobs:
 
       - name: Build Windows (amd64)
         run: GOOS=windows GOARCH=amd64 go build -v -o ./bin/specter-windows-amd64.exe ./cmd/specter
+
+      - name: Validate GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
+

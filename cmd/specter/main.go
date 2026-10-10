@@ -23,7 +23,10 @@ import (
 )
 
 var (
-	version = "0.1.0-dev"
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+	builtBy = "unknown"
 
 	// CLI flags
 	flagLevel   string
@@ -36,6 +39,12 @@ var (
 	flagNoColor bool
 )
 
+// buildVersionString formats complete build and runtime provenance.
+func buildVersionString() string {
+	return fmt.Sprintf("%s (commit: %s, built at: %s by %s, %s %s/%s)",
+		version, commit, date, builtBy, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "specter <port|pid>",
@@ -44,7 +53,7 @@ func newRootCmd() *cobra.Command {
 and streams its stdout and stderr directly to your terminal.
 
 Zero configuration, zero wrappers, read-only.`,
-		Version:      version,
+		Version:      buildVersionString(),
 		SilenceUsage: true,
 		Args:         cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -203,6 +212,15 @@ Zero configuration, zero wrappers, read-only.`,
 	flags.StringVar(&flagSource, "source", "", "force source selection (docker, file, journal, strace)")
 	flags.BoolVar(&flagTree, "tree", false, "follow and attach to child processes")
 	flags.BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
+
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the version and build metadata",
+		Run: func(c *cobra.Command, args []string) {
+			fmt.Printf("specter version %s\n", buildVersionString())
+		},
+	}
+	cmd.AddCommand(versionCmd)
 
 	return cmd
 }
