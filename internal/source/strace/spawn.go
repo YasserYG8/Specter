@@ -60,18 +60,16 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 
 	s.parser = NewParser(target.PID)
 
-	// Build strace command: strace [-f] -qq -xx -s 8192 -e trace=write -p PID
-	args := make([]string, 0, 8)
-	if s.options.FollowTree {
-		args = append(args, "-f")
-	}
-	args = append(args,
+	// Build strace command: strace -f -qq -xx -s 8192 -e trace=write -p PID
+	// Note: -f is required so strace attaches to all threads of process PID
+	args := []string{
+		"-f",
 		"-qq",
 		"-xx",
 		"-s", "8192",
 		"-e", "trace=write",
 		"-p", strconv.Itoa(target.PID),
-	)
+	}
 
 	cmd := exec.CommandContext(ctx, "strace", args...)
 
