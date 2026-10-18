@@ -60,16 +60,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 
 	s.parser = NewParser(target.PID)
 
-	// Build strace command: strace -f -qq -xx -s 8192 -e trace=write -p PID
-	// Note: -f is required so strace attaches to all threads of process PID
-	args := []string{
-		"-f",
-		"-qq",
-		"-xx",
-		"-s", "8192",
-		"-e", "trace=write",
-		"-p", strconv.Itoa(target.PID),
-	}
+	args := BuildStraceArgs(target)
 
 	cmd := exec.CommandContext(ctx, "strace", args...)
 
@@ -201,3 +192,36 @@ func (s *Source) ProcessStatus() string {
 	defer s.mu.Unlock()
 	return s.processStatus
 }
+
+// BuildStraceArgs constructs the command-line arguments for strace execution,
+// including multi-PID attachment for pre-existing child worker processes.
+func BuildStraceArgs(target source.Target) []string {
+	// Build strace command: strace -f -qq -xx -s 8192 -e trace=write -p PID [-p CHILD_PID...]
+	// Note: -f is required so strace attaches to all threads of target processes
+	args := []string{
+		"-f",
+		"-qq",
+		"-xx",
+		"-s", "8192",
+		"-e", "trace=write",
+		"-p", strconv.Itoa(target.PID),
+	}
+
+	seen := map[int]bool{target.PID: true}
+	// Limit to max 16 child PIDs to avoid exceeding strace argument constraints
+	maxChildren := 16
+	count := 0
+	for _, childPID := range target.Children {
+		if childPID > 0 && !seen[childPID] {
+			seen[childPID] = true
+			args = append(args, "-p", strconv.Itoa(childPID))
+			count++
+			if count >= maxChildren {
+				break
+			}
+		}
+	}
+
+	return args
+}
+

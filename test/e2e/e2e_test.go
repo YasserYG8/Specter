@@ -89,9 +89,10 @@ type serverProcess struct {
 	cmd  *exec.Cmd
 }
 
-func startTestServer(t *testing.T, serverBin string) (*serverProcess, func()) {
+func startTestServer(t *testing.T, serverBin string, extraArgs ...string) (*serverProcess, func()) {
 	t.Helper()
-	cmd := exec.Command(serverBin, "-port=0")
+	args := append([]string{"-port=0"}, extraArgs...)
+	cmd := exec.Command(serverBin, args...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("failed to create server stdout pipe: %v", err)
@@ -604,3 +605,53 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 		t.Fatalf("Specter did not terminate within timeout after target exited")
 	}
 }
+
+func TestE2E_PreExistingChildWorker(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/specter-cli/specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/specter-cli/specter/test/e2e/testserver", "testserver")
+
+	srv, cleanupServer := startTestServer(t, serverBin, "-spawn-child")
+	defer cleanupServer()
+
+	// Ensure the child worker process is running before Specter is invoked
+	time.Sleep(300 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	var stdout, stderr safeBuffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start specter: %v", err)
+	}
+	defer func() {
+		cancel()
+		_ = cmd.Wait()
+	}()
+
+	attached := waitForCondition(t, 30*time.Second, func() bool {
+		return strings.Contains(stderr.String(), "Attaching to PID")
+	})
+	if !attached {
+		t.Fatalf("Specter did not attach within timeout. Stderr:\n%s", stderr.String())
+	}
+
+	// Verify that Specter detected the pre-existing child worker in the banner
+	_ = waitForCondition(t, 10*time.Second, func() bool {
+		return strings.Contains(stderr.String(), "Discovered active child worker(s)")
+	})
+
+	// Verify that logs emitted by the pre-existing child worker are captured
+	foundChildLog := waitForCondition(t, 30*time.Second, func() bool {
+		return strings.Contains(stdout.String(), "child worker active")
+	})
+	if !foundChildLog {
+		t.Fatalf("Specter failed to capture logs from pre-existing child worker.\nStdout:\n%s\nStderr:\n%s", stdout.String(), stderr.String())
+	}
+}
+

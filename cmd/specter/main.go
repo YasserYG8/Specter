@@ -193,6 +193,16 @@ Zero configuration, zero wrappers, read-only.`,
 				target = t
 			}
 
+			// Discover pre-existing child processes (e.g. Uvicorn reloader, Gunicorn workers)
+			inspector := resolver.NewProcessInspector("")
+			if flagTree {
+				target.Children = inspector.FindChildProcessTree(target.PID, 3)
+			} else {
+				if kids, err := inspector.FindChildPIDs(target.PID); err == nil {
+					target.Children = kids
+				}
+			}
+
 			// Notice if stdout and stderr are discarded to /dev/null
 			if strings.Contains(target.Stdout, "/dev/null") && strings.Contains(target.Stderr, "/dev/null") {
 				fmt.Fprintf(os.Stderr, "%s Target process has stdout/stderr redirected to /dev/null; no console logs are emitted.\n", color.YellowString("[specter:notice]"))
@@ -223,6 +233,13 @@ Zero configuration, zero wrappers, read-only.`,
 				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d on port :%d (%s)\n", headerTag, target.PID, target.Port, cmdSummary)
 			} else {
 				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d (%s)\n", headerTag, target.PID, cmdSummary)
+			}
+			if len(target.Children) > 0 {
+				childStrList := make([]string, len(target.Children))
+				for i, c := range target.Children {
+					childStrList[i] = strconv.Itoa(c)
+				}
+				fmt.Fprintf(os.Stderr, "%s Discovered active child worker(s): PID %s\n", headerTag, strings.Join(childStrList, ", "))
 			}
 			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
 

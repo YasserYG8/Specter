@@ -23,6 +23,7 @@ type Target struct {
 	Stderr    string   // Target path or descriptor type of fd 2
 	Container string   // Docker container ID or name if containerized
 	Unit      string   // Systemd service unit if running under systemd
+	Children  []int    // Active child process PIDs (e.g. Uvicorn/Gunicorn workers)
 }
 
 // Source defines the interface for acquiring output chunks from a target process.

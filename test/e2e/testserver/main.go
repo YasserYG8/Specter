@@ -14,9 +14,10 @@ import (
 func main() {
 	portFlag := flag.Int("port", 0, "Port to listen on (0 for dynamic ephemeral port)")
 	roleFlag := flag.String("role", "parent", "Role: parent or child")
+	spawnChildFlag := flag.Bool("spawn-child", false, "Spawn child worker at startup")
 	flag.Parse()
 
-	if *roleFlag == "child" {
+	if *roleFlag == "child" || *roleFlag == "child-worker" {
 		runChildWorker()
 		return
 	}
@@ -29,6 +30,18 @@ func main() {
 	defer listener.Close()
 
 	actualPort := listener.Addr().(*net.TCPAddr).Port
+
+	if *spawnChildFlag {
+		childCmd := exec.Command(os.Args[0], "-role=child-worker")
+		childCmd.Stdout = os.Stdout
+		childCmd.Stderr = os.Stderr
+		if err := childCmd.Start(); err == nil {
+			go func() {
+				_ = childCmd.Wait()
+			}()
+		}
+	}
+
 	// Signal ready to stdout for test harness synchronization
 	fmt.Printf("SPECTER_TEST_SERVER_READY port=%d pid=%d\n", actualPort, os.Getpid())
 	os.Stdout.Sync()
@@ -124,10 +137,10 @@ func main() {
 }
 
 func runChildWorker() {
-	// Worker child process emits identifiable logs and exits
-	for i := 0; i < 15; i++ {
+	// Worker child process emits identifiable logs periodically
+	for i := 0; i < 50; i++ {
 		fmt.Fprintf(os.Stdout, `{"level":"info","msg":"child worker active","worker_pid":%d,"step":%d}`+"\n", os.Getpid(), i)
 		os.Stdout.Sync()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 }
