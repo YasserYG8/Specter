@@ -1,67 +1,99 @@
 # Specter
 
-A zero-configuration developer CLI in Go that attaches to any active server process by port or PID and streams live stdout and stderr directly to the terminal.
+A zero-configuration developer CLI in Go that attaches to any active server process or container by **port**, **PID**, **container name**, or **project name**, and streams live stdout and stderr directly to your terminal.
 
 ```bash
+# Launch interactive service picker
+specter
+
+# Attach directly by port, project, container, or PID
 specter 3000
+specter my-api-project
+specter api-gateway-container
+specter 18492
 ```
 
 ---
 
 ## Overview
 
-When running backend services across multiple terminal sessions, background tasks, or containers, locating log output requires searching for the active terminal or restarting the service with logging wrappers.
+When running backend microservices, dev servers, or background containers across multiple terminal sessions, locating logs often requires hunting down hidden terminal tabs, querying container IDs, or restarting processes with verbose log wrappers.
 
-Specter eliminates this workflow friction. Given a listening TCP port or a process ID, Specter resolves the target process, identifies where its standard streams are directed, attaches non-invasively, and streams the output in real time with line reassembly, JSON formatting, and log-level coloring.
+**Specter eliminates this workflow friction.** Given a port, PID, container, or project name—or simply running `specter` to open the interactive picker—Specter resolves the target, identifies where its standard streams are directed, attaches non-invasively, and streams the output in real time with line reassembly, JSON formatting, and log-level coloring.
 
 ---
 
-## Key Principles
+## Key Features
 
-- **Zero Configuration**: Functions against already running processes. Does not require SDKs, code changes, wrappers, or environment flags.
-- **Strictly Read-Only**: Specter never signals, suspends indefinitely, modifies, or restarts the target process. It does not open incoming network ports.
-- **Local and Private**: All inspection and stream handling occur entirely on the local machine. No telemetry or network transmission is performed.
-- **Standalone Static Binary**: Compiled in Go with zero runtime dependencies. No Node.js, Python, or JVM installation needed.
-- **Honest Diagnostics**: If kernel restrictions (such as `ptrace_scope`) prevent attachment, Specter reports the exact reason and actionable remediation steps.
+- **Interactive Discovery Picker**: Run `specter` with zero arguments to browse all active dev servers, listening ports, Docker containers, and project directories in a comfortable, keyboard-driven UI (`↑`/`↓` or `k`/`j`, `Enter` to select).
+- **Project-Aware Resolution**: Automatically infers project names from your working directory, git repositories, or container labels (like the `ports` CLI). Attach instantly via `specter <project-name>`.
+- **Flexible Target Resolution**: Attach by listening port (`specter 3000`), process ID (`specter 14280`), Docker container name or ID (`specter web_app`), or project name (`specter example`).
+- **Multi-Process / Worker Tree Tracing (`--tree`)**: Automatically discovers and traces child worker processes (e.g. Node.js `cluster`, Gunicorn, Celery, Puma, Unicorn).
+- **Smart Log Pipeline**: Reassembles split lines and multi-threaded streams, pretty-prints single-line JSON logs, highlights HTTP status codes, and groups multi-line stack traces (Node.js, Python, Go, Java).
+- **Zero Configuration & Strictly Read-Only**: Works against already-running processes without code modifications, SDKs, or restarts. Never injects code or opens inbound network ports.
+- **Shell Autocompletion**: Context-aware autocompletion for Bash, Zsh, Fish, and PowerShell that dynamically suggests active ports, container names, and projects.
+
+---
+
+## Interactive Discovery Picker
+
+Running `specter` without arguments scans the system and opens an interactive terminal interface:
+
+```text
+[specter] Select an active dev server or container to stream (use ↑/↓ or j/k, Enter to select, Esc to quit):
+
+  TYPE     PORT     PROJECT           PROCESS / IMAGE             PATH / TARGET
+  ──────   ──────   ───────────────   ─────────────────────────   ─────────────
+❯ host     :3000    Specter           specter-dev (PID 14280)     /home/user/projects/Specter
+  docker   :8080    billing-service   node:20-alpine              billing-api (c5e3f1a09d)
+  docker   :5432    database          postgres:16                 postgres-db (a1b2c3d4e5)
+  host     :6379    -                 redis-server (PID 2104)     /etc/redis/redis.conf
+```
+
+In non-interactive environments (CI, pipes, scripts), Specter automatically outputs a cleanly aligned text table.
 
 ---
 
 ## Architecture & How It Works
 
 ```
-specter <port|pid>
+specter [port | pid | container | project] (or interactive picker)
        │
        ▼
-[CLI Parser]  ─── Parses flags (--level, --grep, --source) using spf13/cobra
+[Target Resolver]
+       ├── Port Resolver       ─── Queries lsof / ss / procfs for listening TCP sockets
+       ├── Project Resolver    ─── Inspects working directories, git root, package metadata
+       ├── Docker Resolver     ─── Inspects docker engine API / CLI for mapped ports & containers
+       └── Process Resolver    ─── Reads /proc/<pid>/cmdline, cwd, fd targets
        │
        ▼
-[Resolver]    ─── Resolves port to PID via lsof / ss; reads /proc/<pid>/
+[Worker Tree Discovery] ─── Discovers worker child PIDs if --tree is enabled
        │
        ▼
 [Source Selector]
-       ├── Docker Container   ─── Spawns docker logs -f --tail 0
-       ├── Regular File       ─── Follows file descriptor target
-       ├── Systemd Service    ─── Reads journalctl -f _PID=<pid>
-       └── Terminal / PTY     ─── Attaches via strace (trace=write)
+       ├── Docker Engine       ─── Streams docker logs -f --tail 0
+       ├── Regular File        ─── Follows file descriptor target
+       ├── Systemd Journal     ─── Reads journalctl -f _PID=<pid>
+       └── PTY / Syscall Trace ─── Attaches via optimized strace (trace=write on fds 1 & 2)
        │
        ▼
-[Line Assembler]  ─── Per-thread/fd buffer assembly, streaming UTF-8 decoding
+[Line Assembler]        ─── Thread/FD buffer assembly, flush timer, streaming UTF-8 decoding
        │
        ▼
-[Parser & Formatter]── Log-level tagging, single-line JSON formatting, stack trace grouping
+[Parser & Formatter]    ─── Log-level detection, single-line JSON formatting, stack trace grouping
        │
        ▼
-[Output Renderer] ─── ANSI colored stdout stream (respects NO_COLOR and pipes)
+[Output Renderer]       ─── ANSI colored stdout stream (respects NO_COLOR and pipes)
 ```
 
-1. **Resolution**: Inspects network state using `lsof` or `ss` to identify the listening PID. Reads `/proc/<pid>/cmdline`, `/proc/<pid>/cwd`, and resolves `/proc/<pid>/fd/1` and `/proc/<pid>/fd/2`.
-2. **Source Selection**: Determines the optimal log acquisition mechanism:
-   - If the PID is associated with a Docker container, it streams via the container engine.
-   - If stdout/stderr are redirected to a regular file, it follows the file descriptor directly.
-   - If governed by systemd, it streams via `journalctl`.
-   - By default (standard terminals, ptys, and pipes), it attaches using an optimized `strace` instance monitoring `write()` syscalls on descriptors 1 and 2.
-3. **Assembly & Stream Processing**: Strace hex outputs (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and provides a short flush timer for interactive prompts.
-4. **Formatting**: Output is parsed for standard log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), HTTP response codes, and multi-line stack traces (Node.js, Python, Java) before ANSI terminal rendering.
+1. **Resolution**: Inspects network state using `lsof` or `ss` to identify the listening PID and checks the local Docker daemon for containerized port mappings. Inspects `/proc/<pid>/cmdline`, `/proc/<pid>/cwd`, and maps `/proc/<pid>/fd/1` and `/proc/<pid>/fd/2`.
+2. **Source Selection**: Chooses the optimal acquisition mechanism:
+   - **Docker Container**: Streams directly via Docker API / `docker logs`.
+   - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
+   - **Systemd Service**: Streams via `journalctl` if governed by systemd.
+   - **Terminal / PTY**: Uses non-invasive `strace` snooping on `write()` syscalls for descriptors 1 and 2.
+3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
+4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 
 ---
 
@@ -70,67 +102,121 @@ specter <port|pid>
 ### Basic Usage
 
 ```bash
-# Attach by listening TCP port
-specter 3000
+# 1. Interactive picker (select from active ports, projects, containers)
+specter
 
-# Attach by Process ID
+# 2. Attach by listening TCP port
+specter 3000
+specter 8080
+
+# 3. Attach by project name (auto-detected from directory)
+specter my-frontend-app
+
+# 4. Attach by Docker container name or ID
+specter redis-cache
+specter 7a4b1c2d3e4f
+
+# 5. Attach by Process ID (PID)
 specter 18492
 ```
 
 ### Flags
 
-| Flag | Description |
-| :--- | :--- |
-| `--level <lvl>` | Minimum log level to display (`debug`, `info`, `warn`, `error`). |
-| `--grep <pattern>` | Filter output by text or regular expression. Preserves grouped stack traces. |
-| `--stderr` | Stream only standard error (fd 2). |
-| `--json` | Force raw JSON lines without pretty-printing. |
-| `--raw` | Bypass line parsing and ANSI color formatting. |
-| `--source <name>` | Explicitly select source (`docker`, `file`, `journal`, `strace`). |
-| `--tree` | Follow and attach to child processes. |
-| `--no-color` | Disable ANSI color codes (also adheres to `NO_COLOR` environment variable). |
+| Flag | Shorthand | Description |
+| :--- | :--- | :--- |
+| `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). |
+| `--grep <pattern>` | `-g` | Filter output by text or regular expression. Preserves grouped stack traces. |
+| `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |
+| `--tree` | `-t` | Automatically discover and attach to child processes / worker threads. |
+| `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |
+| `--json` | | Output formatted single-line JSON records. |
+| `--raw` | | Bypass line parsing and ANSI color formatting (pure raw stream). |
+| `--no-color` | | Disable ANSI terminal color codes (also adheres to `NO_COLOR`). |
+
+### Examples
+
+```bash
+# Stream warnings and errors only from port 3000
+specter 3000 --level warn
+
+# Filter for authentication errors across worker processes
+specter 8000 --tree --grep "auth|unauthorized|invalid token"
+
+# Isolate unhandled exceptions and crashes on stderr
+specter 3000 --stderr
+
+# Trace a Docker container with raw JSON output
+specter api-container --json
+```
+
+---
+
+## Shell Autocompletion
+
+Specter provides dynamic autocompletion for active ports, container names, and project directories.
+
+```bash
+# Bash
+source <(specter completion bash)
+
+# Zsh
+source <(specter completion zsh)
+# Or save to your zsh completion directory:
+specter completion zsh > "${fpath[1]}/_specter"
+
+# Fish
+specter completion fish | source
+
+# PowerShell (WSL2 / Windows)
+specter completion powershell | Out-String | Invoke-Expression
+```
 
 ---
 
 ## System Requirements & Platform Support
 
-Specter is engineered as a Linux-first systems tool leveraging Linux kernel interfaces (`/proc`, `ptrace(2)`, `lsof`, `ss`).
+Specter is engineered as a Linux-first systems tool leveraging Linux kernel interfaces (`/proc`, `ptrace(2)`, `lsof`, `ss`, and Docker socket).
 
 - **Linux**: Native support on all standard distributions (Ubuntu, Debian, Fedora, Arch, Alpine).
-- **Windows**: Supported via **WSL2** (Windows Subsystem for Linux).
-- **macOS**: Native macOS is currently out of scope for the MVP due to System Integrity Protection (SIP) restrictions on ptrace.
+- **Windows**: Fully supported via **WSL2** (Windows Subsystem for Linux).
+- **macOS**: Native macOS is currently out of scope due to macOS System Integrity Protection (SIP) restrictions on `ptrace`.
 
 ### Dependencies
 
-- Go 1.24 or higher (for building from source)
-- System utilities: `lsof` (or `iproute2`/`ss`), `strace`
+- **Runtime**: `lsof` (or `iproute2`/`ss`), `strace` (for PTY/terminal snooping), and optional `docker` CLI.
+- **Build**: Go 1.24 or higher.
 
-### Kernel Permissions (ptrace)
+### Kernel Permissions (`ptrace_scope`)
 
-On systems enforcing restricted ptrace access (`/proc/sys/kernel/yama/ptrace_scope`), tracing non-child processes may require elevated privileges or capability assignment:
+On Linux systems enforcing restricted ptrace access (`/proc/sys/kernel/yama/ptrace_scope`), attaching to non-child processes via strace may require elevated permissions:
 
 ```bash
-# Verify ptrace scope
+# Check current ptrace scope (0 = unrestricted, 1 = restricted to child processes)
 cat /proc/sys/kernel/yama/ptrace_scope
 
-# Option A: Run with sudo
+# Option A: Run Specter with sudo
 sudo specter 3000
 
-# Option B: Grant strace the ptrace capability
+# Option B: Grant strace the ptrace capability permanently
 sudo setcap cap_sys_ptrace+ep $(which strace)
+
+# Option C: Temporarily allow ptrace snooping (resets on reboot)
+sudo sysctl -w kernel.yama.ptrace_scope=0
 ```
 
 ---
 
-## Development & Building
-
-Specter can be built natively on Linux or cross-compiled directly from Windows for Linux:
+## Building from Source
 
 ```bash
-# Run unit and fixture tests
+# Clone the repository
+git clone https://github.com/YasserYG8/Specter.git
+cd Specter
+
+# Run tests
 go test ./...
 
-# Build local binary
+# Build binary
 go build -o specter ./cmd/specter
 
 # Cross-compile for Linux (from Windows PowerShell)
@@ -141,4 +227,4 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 
 ## License
 
-MIT
+[MIT](LICENSE)
