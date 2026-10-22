@@ -654,4 +654,3 @@ func TestE2E_PreExistingChildWorker(t *testing.T) {
 		t.Fatalf("Specter failed to capture logs from pre-existing child worker.\nStdout:\n%s\nStderr:\n%s", stdout.String(), stderr.String())
 	}
 }
-

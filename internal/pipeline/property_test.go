@@ -62,8 +62,8 @@ func TestProperty_LosslessRendering(t *testing.T) {
 // TestProperty_TerminalSafety verifies non-SGR control codes (OSC, CSI, BEL) are sanitized.
 func TestProperty_TerminalSafety(t *testing.T) {
 	cases := []struct {
-		name     string
-		input    string
+		name      string
+		input     string
 		forbidden []string
 	}{
 		{
