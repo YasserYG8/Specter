@@ -14,11 +14,15 @@ import (
 
 // ListeningPort represents an active TCP listening socket discovered on the system.
 type ListeningPort struct {
-	Port        int
-	PID         int
-	ProcessName string
-	Cmdline     string
-	IsProtected bool // True if listening but process info was hidden due to permissions
+	Port          int
+	PID           int
+	ProcessName   string
+	Cmdline       string
+	IsProtected   bool // True if listening but process info was hidden due to permissions
+	ContainerID   string
+	ContainerName string
+	ContainerPort int
+	Image         string
 }
 
 // NoProcessOnPortError is returned when a target TCP port has no listening process.
@@ -67,7 +71,13 @@ func (e *NoProcessOnPortError) FormatDiagnostic(useColor bool) string {
 			portStr = color.YellowString(portStr)
 		}
 
-		if p.IsProtected {
+		if p.ContainerName != "" {
+			desc := fmt.Sprintf("docker:%s", p.ContainerName)
+			if p.Image != "" {
+				desc = fmt.Sprintf("docker:%s (%s)", p.ContainerName, p.Image)
+			}
+			sb.WriteString(fmt.Sprintf("  • %-7s %s\n", portStr, desc))
+		} else if p.IsProtected {
 			sb.WriteString(fmt.Sprintf("  • %-7s (process owned by root/another user — run with sudo)\n", portStr))
 		} else if p.ProcessName != "" {
 			sb.WriteString(fmt.Sprintf("  • %-7s PID %-6d (%s)\n", portStr, p.PID, p.ProcessName))
@@ -94,27 +104,157 @@ func (e *NoProcessOnPortError) FormatDiagnostic(useColor bool) string {
 	return sb.String()
 }
 
-// DiscoverListeningPorts discovers all currently listening TCP ports using ss or lsof.
+// DiscoverListeningPorts discovers all currently listening TCP ports using ss or lsof,
+// enriched with active Docker container port mappings.
 func (r *PortResolver) DiscoverListeningPorts(ctx context.Context) ([]ListeningPort, error) {
+	var ports []ListeningPort
+
 	// 1. Try ss: ss -H -ltnp
 	out, err := r.runner(ctx, "ss", "-H", "-ltnp")
 	if err == nil && len(out) > 0 {
-		ports := parseSSListeningPorts(string(out))
-		if len(ports) > 0 {
-			return ports, nil
+		ports = parseSSListeningPorts(string(out))
+	} else {
+		// 2. Fallback to lsof: lsof -iTCP -sTCP:LISTEN -P -n
+		out, err = r.runner(ctx, "lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n")
+		if err == nil && len(out) > 0 {
+			ports = parseLsofListeningPorts(string(out))
 		}
 	}
 
-	// 2. Fallback to lsof: lsof -iTCP -sTCP:LISTEN -P -n
-	out, err = r.runner(ctx, "lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n")
-	if err == nil && len(out) > 0 {
-		ports := parseLsofListeningPorts(string(out))
-		if len(ports) > 0 {
-			return ports, nil
+	// 3. Enrich with running Docker containers (non-blocking fallback)
+	if containers, cErr := DiscoverDockerContainers(ctx, r.runner); cErr == nil && len(containers) > 0 {
+		ports = mergeDockerContainersIntoListeningPorts(ports, containers)
+	}
+
+	return ports, nil
+}
+
+// mergeDockerContainersIntoListeningPorts enriches listening ports with container metadata
+// and appends published container ports that were not detected in host ss/lsof tables.
+func mergeDockerContainersIntoListeningPorts(ports []ListeningPort, containers []DockerContainer) []ListeningPort {
+	seen := make(map[int]int) // port -> index in ports
+	for i, p := range ports {
+		seen[p.Port] = i
+	}
+
+	for _, c := range containers {
+		for _, m := range c.Ports {
+			if idx, ok := seen[m.HostPort]; ok {
+				// Enrich existing port
+				if ports[idx].IsProtected || ports[idx].ProcessName == "docker-proxy" || ports[idx].ProcessName == "" {
+					ports[idx].IsProtected = false
+					ports[idx].ContainerName = c.PrimaryName()
+					ports[idx].ContainerID = c.ShortID()
+					ports[idx].ContainerPort = m.ContainerPort
+					ports[idx].ProcessName = c.PrimaryName()
+					ports[idx].Image = c.Image
+				}
+			} else {
+				// Append container port mapping
+				newPort := ListeningPort{
+					Port:          m.HostPort,
+					ContainerName: c.PrimaryName(),
+					ContainerID:   c.ShortID(),
+					ContainerPort: m.ContainerPort,
+					ProcessName:   c.PrimaryName(),
+					Image:         c.Image,
+					IsProtected:   false,
+				}
+				ports = append(ports, newPort)
+				seen[m.HostPort] = len(ports) - 1
+			}
 		}
 	}
 
-	return nil, nil
+	sort.Slice(ports, func(i, j int) bool {
+		return ports[i].Port < ports[j].Port
+	})
+
+	return ports
+}
+
+// ServiceKind distinguishes host processes from containerized services.
+type ServiceKind string
+
+const (
+	ServiceKindHost   ServiceKind = "host"
+	ServiceKindDocker ServiceKind = "docker"
+)
+
+// DiscoveredService unifies host listening sockets and active Docker containers for the picker.
+type DiscoveredService struct {
+	Kind          ServiceKind
+	Port          int
+	ContainerPort int
+	PID           int
+	ProcessName   string
+	ContainerID   string
+	ContainerName string
+	Image         string
+	Description   string
+	IsProtected   bool
+}
+
+// DiscoverServices returns a unified list of active host ports and Docker containers.
+func (r *PortResolver) DiscoverServices(ctx context.Context) ([]DiscoveredService, error) {
+	ports, _ := r.DiscoverListeningPorts(ctx)
+	containers, _ := DiscoverDockerContainers(ctx, r.runner)
+
+	var services []DiscoveredService
+	seenContainerNames := make(map[string]bool)
+
+	// 1. Add listening ports (both host and container mapped)
+	for _, p := range ports {
+		if p.ContainerName != "" {
+			seenContainerNames[p.ContainerName] = true
+			services = append(services, DiscoveredService{
+				Kind:          ServiceKindDocker,
+				Port:          p.Port,
+				ContainerPort: p.ContainerPort,
+				ContainerName: p.ContainerName,
+				ContainerID:   p.ContainerID,
+				Image:         p.Image,
+				ProcessName:   p.ContainerName,
+				Description:   fmt.Sprintf("docker:%s (%s)", p.ContainerName, p.Image),
+			})
+		} else {
+			desc := p.ProcessName
+			if p.IsProtected {
+				desc = "protected process (run with sudo)"
+			} else if p.PID > 0 && p.ProcessName != "" {
+				desc = fmt.Sprintf("%s (PID %d)", p.ProcessName, p.PID)
+			} else if p.PID > 0 {
+				desc = fmt.Sprintf("PID %d", p.PID)
+			}
+			services = append(services, DiscoveredService{
+				Kind:        ServiceKindHost,
+				Port:        p.Port,
+				PID:         p.PID,
+				ProcessName: p.ProcessName,
+				Description: desc,
+				IsProtected: p.IsProtected,
+			})
+		}
+	}
+
+	// 2. Add containers without published ports
+	for _, c := range containers {
+		cName := c.PrimaryName()
+		if seenContainerNames[cName] {
+			continue
+		}
+		seenContainerNames[cName] = true
+		services = append(services, DiscoveredService{
+			Kind:          ServiceKindDocker,
+			ContainerName: cName,
+			ContainerID:   c.ShortID(),
+			Image:         c.Image,
+			ProcessName:   cName,
+			Description:   fmt.Sprintf("%s (%s)", cName, c.Image),
+		})
+	}
+
+	return services, nil
 }
 
 // Regex to extract port and process info from ss output
@@ -350,17 +490,22 @@ func RankSuggestions(requestedPort int, activePorts []ListeningPort) ([]Listenin
 		// 4. Runtime classification bonus / penalty
 		procLower := strings.ToLower(p.ProcessName)
 		isDev := false
-		for _, name := range devRuntimeNames {
-			if name == "go" {
-				if procLower == "go" || strings.HasPrefix(procLower, "go-") || strings.HasSuffix(procLower, "-go") || strings.Contains(procLower, "golang") {
+		if p.ContainerName != "" {
+			score += 35
+			isDev = true
+		} else {
+			for _, name := range devRuntimeNames {
+				if name == "go" {
+					if procLower == "go" || strings.HasPrefix(procLower, "go-") || strings.HasSuffix(procLower, "-go") || strings.Contains(procLower, "golang") {
+						score += 35
+						isDev = true
+						break
+					}
+				} else if strings.Contains(procLower, name) {
 					score += 35
 					isDev = true
 					break
 				}
-			} else if strings.Contains(procLower, name) {
-				score += 35
-				isDev = true
-				break
 			}
 		}
 

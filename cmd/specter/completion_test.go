@@ -284,3 +284,47 @@ func TestCLI_HelpExamples(t *testing.T) {
 		}
 	}
 }
+
+func TestValidArgsFunction_ContainerCompletions(t *testing.T) {
+	origPortFunc := portDiscoveryFunc
+	t.Cleanup(func() {
+		portDiscoveryFunc = origPortFunc
+	})
+
+	mockPorts := []resolver.ListeningPort{
+		{
+			Port:          8080,
+			PID:           0,
+			ContainerName: "phpmyadmin",
+			Image:         "phpmyadmin:latest",
+		},
+		{
+			Port:          3306,
+			PID:           0,
+			ContainerName: "mysql_db",
+			Image:         "mysql:8.4",
+		},
+	}
+
+	portDiscoveryFunc = func(ctx context.Context) ([]resolver.ListeningPort, error) {
+		return mockPorts, nil
+	}
+
+	cmd := newRootCmd()
+
+	// 1. All completions should include both ports and container names
+	completions, directive := cmd.ValidArgsFunction(cmd, []string{}, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("expected ShellCompDirectiveNoFileComp, got %v", directive)
+	}
+
+	if len(completions) != 4 {
+		t.Fatalf("expected 4 completions, got %d: %v", len(completions), completions)
+	}
+
+	// 2. Filter by container name prefix
+	filtered, _ := cmd.ValidArgsFunction(cmd, []string{}, "php")
+	if len(filtered) != 1 || !strings.HasPrefix(filtered[0], "phpmyadmin") {
+		t.Errorf("expected only phpmyadmin for prefix 'php', got %v", filtered)
+	}
+}

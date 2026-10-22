@@ -65,6 +65,13 @@ func (s *Selector) Select(target *source.Target) (source.Source, string, error) 
 			}
 			return docker.NewSource(), fmt.Sprintf("detected Docker container (%s)", shortID), nil
 		}
+		if target.PID <= 0 {
+			return nil, "", fmt.Errorf("docker executable not found in PATH to attach to container %q", containerID)
+		}
+	}
+
+	if target.PID <= 0 && target.Container == "" {
+		return nil, "", fmt.Errorf("target must have a valid PID or container name")
 	}
 
 	// 3. Check Systemd Service Unit

@@ -76,3 +76,37 @@ func TestSelector_AutoDetectDefaultStrace(t *testing.T) {
 		t.Error("expected non-empty reason")
 	}
 }
+
+func TestSelector_DirectContainerTarget(t *testing.T) {
+	sel := NewSelector("", false)
+	target := &source.Target{
+		PID:       0,
+		Container: "phpmyadmin",
+	}
+
+	src, reason, err := sel.Select(target)
+	if err != nil {
+		// If docker binary is not on host testing machine, error should state docker executable not found
+		t.Logf("docker lookpath failed on this environment: %v", err)
+		return
+	}
+	if src.Name() != "docker" {
+		t.Errorf("expected source 'docker', got %q", src.Name())
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason")
+	}
+}
+
+func TestSelector_ZeroPIDAndNoContainer(t *testing.T) {
+	sel := NewSelector("", false)
+	target := &source.Target{
+		PID:       0,
+		Container: "",
+	}
+
+	_, _, err := sel.Select(target)
+	if err == nil {
+		t.Fatal("expected error for PID 0 without container, got nil")
+	}
+}

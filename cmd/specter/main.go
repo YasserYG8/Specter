@@ -20,6 +20,7 @@ import (
 	"github.com/specter-cli/specter/internal/source"
 	"github.com/specter-cli/specter/internal/source/selector"
 	"github.com/specter-cli/specter/internal/source/strace"
+	"github.com/specter-cli/specter/internal/ui"
 	"github.com/specter-cli/specter/internal/util"
 )
 
@@ -54,15 +55,23 @@ func buildVersionString() string {
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "specter <port|pid>",
-		Short: "Live stdout/stderr stream from any server by port or PID",
-		Long: `Specter attaches to any active server process by listening port or PID
+		Use:   "specter [port|pid|container]",
+		Short: "Live stdout/stderr stream from any server by port, PID, or container",
+		Long: `Specter attaches to any active server process by listening port, PID, or container name
 and streams its stdout and stderr directly to your terminal.
 
+Running 'specter' without arguments launches an interactive discovery picker.
 Zero configuration, zero wrappers, read-only.`,
-		Example: `  # Attach to an active HTTP/API server by listening port
+		Example: `  # Launch interactive picker to select an active service or container
+  specter
+
+  # Attach to an active HTTP/API server by listening port
   specter 3000
   specter 8080
+
+  # Attach directly to a Docker container by name or ID
+  specter phpmyadmin
+  specter mysql_db
 
   # Attach directly to a known process ID (PID)
   specter 14280
@@ -90,7 +99,7 @@ Zero configuration, zero wrappers, read-only.`,
   specter 3000 --no-color`,
 		Version:      buildVersionString(),
 		SilenceUsage: true,
-		Args:         cobra.ExactArgs(1),
+		Args:         cobra.RangeArgs(0, 1),
 		ValidArgsFunction: func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			if len(args) != 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
@@ -105,34 +114,53 @@ Zero configuration, zero wrappers, read-only.`,
 			}
 
 			var completions []string
+			seenContainers := make(map[string]bool)
+
 			for _, p := range ports {
-				portStr := strconv.Itoa(p.Port)
-				if toComplete != "" && !strings.HasPrefix(portStr, toComplete) {
-					continue
-				}
+				if p.Port > 0 {
+					portStr := strconv.Itoa(p.Port)
+					if toComplete == "" || strings.HasPrefix(portStr, toComplete) {
+						cleanProc := strings.Map(func(r rune) rune {
+							if r == '\t' || r == '\n' || r == '\r' {
+								return ' '
+							}
+							return r
+						}, p.ProcessName)
+						cleanProc = strings.TrimSpace(cleanProc)
 
-				cleanProc := strings.Map(func(r rune) rune {
-					if r == '\t' || r == '\n' || r == '\r' {
-						return ' '
+						var desc string
+						if p.ContainerName != "" {
+							if p.Image != "" {
+								desc = fmt.Sprintf("docker:%s (%s)", p.ContainerName, p.Image)
+							} else {
+								desc = fmt.Sprintf("docker:%s", p.ContainerName)
+							}
+						} else if p.IsProtected {
+							desc = "protected process (run with sudo)"
+						} else if cleanProc != "" && p.PID > 0 {
+							desc = fmt.Sprintf("%s (PID %d)", cleanProc, p.PID)
+						} else if cleanProc != "" {
+							desc = cleanProc
+						} else if p.PID > 0 {
+							desc = fmt.Sprintf("PID %d", p.PID)
+						} else {
+							desc = "listening port"
+						}
+
+						completions = append(completions, fmt.Sprintf("%s\t%s", portStr, desc))
 					}
-					return r
-				}, p.ProcessName)
-				cleanProc = strings.TrimSpace(cleanProc)
-
-				var desc string
-				if p.IsProtected {
-					desc = "protected process (run with sudo)"
-				} else if cleanProc != "" && p.PID > 0 {
-					desc = fmt.Sprintf("%s (PID %d)", cleanProc, p.PID)
-				} else if cleanProc != "" {
-					desc = cleanProc
-				} else if p.PID > 0 {
-					desc = fmt.Sprintf("PID %d", p.PID)
-				} else {
-					desc = "listening port"
 				}
 
-				completions = append(completions, fmt.Sprintf("%s\t%s", portStr, desc))
+				if p.ContainerName != "" && !seenContainers[p.ContainerName] {
+					seenContainers[p.ContainerName] = true
+					if toComplete == "" || strings.HasPrefix(p.ContainerName, toComplete) {
+						desc := "docker container"
+						if p.Image != "" {
+							desc = fmt.Sprintf("docker container (%s)", p.Image)
+						}
+						completions = append(completions, fmt.Sprintf("%s\t%s", p.ContainerName, desc))
+					}
+				}
 			}
 
 			return completions, cobra.ShellCompDirectiveNoFileComp
@@ -142,19 +170,17 @@ Zero configuration, zero wrappers, read-only.`,
 				color.NoColor = true
 			}
 
-			targetArg := args[0]
-			val, err := strconv.Atoi(targetArg)
-			if err != nil || val <= 0 {
-				return fmt.Errorf("argument must be a positive port or PID, got: %q", targetArg)
-			}
-
 			// Verify Linux platform
 			if runtime.GOOS != "linux" {
+				targetRemediation := "3000"
+				if len(args) > 0 {
+					targetRemediation = args[0]
+				}
 				return &util.DiagnosticError{
 					Err:         util.ErrUnsupportedPlatform,
 					Title:       fmt.Sprintf("Specter requires Linux kernel interfaces (running on %s)", runtime.GOOS),
 					Explanation: "Low-level /proc inspection and ptrace syscall snooping require a Linux environment.",
-					Remediation: fmt.Sprintf("On Windows, run inside WSL2: wsl specter %d (or within a Linux container)", val),
+					Remediation: fmt.Sprintf("On Windows, run inside WSL2: wsl specter %s (or within a Linux container)", targetRemediation),
 				}
 			}
 
@@ -162,44 +188,116 @@ Zero configuration, zero wrappers, read-only.`,
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			// Resolve target (try as port first if <= 65535, then as PID)
 			res := resolver.NewDefaultResolver(nil, "")
 			var target *source.Target
-			var savedPortErr error
 
-			if val <= 65535 {
-				t, portErr := res.ResolvePort(ctx, val)
-				if portErr == nil {
-					target = t
-				} else if !strings.Contains(portErr.Error(), util.ErrNoProcessFound.Error()) && !errors.Is(portErr, util.ErrNoProcessFound) {
-					// Surface permission or tool errors immediately
-					return portErr
+			if len(args) == 0 {
+				services, err := res.DiscoverServices(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to discover active services: %w", err)
+				}
+
+				selected, err := ui.SelectService(services, ui.PickerConfig{
+					In:       os.Stdin,
+					Out:      os.Stderr,
+					UseColor: !flagNoColor && !color.NoColor,
+				})
+				if err != nil {
+					if errors.Is(err, ui.ErrPickerAborted) {
+						return nil
+					}
+					return err
+				}
+				if selected == nil {
+					return nil
+				}
+
+				if selected.Kind == resolver.ServiceKindDocker {
+					if selected.Port > 0 {
+						t, err := res.ResolvePort(ctx, selected.Port)
+						if err == nil {
+							target = t
+						}
+					}
+					if target == nil {
+						targetName := selected.ContainerName
+						if targetName == "" {
+							targetName = selected.ContainerID
+						}
+						t, err := res.ResolveContainer(ctx, targetName)
+						if err != nil {
+							return err
+						}
+						target = t
+					}
 				} else {
-					savedPortErr = portErr
+					if selected.Port > 0 {
+						t, err := res.ResolvePort(ctx, selected.Port)
+						if err != nil {
+							return err
+						}
+						target = t
+					} else if selected.PID > 0 {
+						t, err := res.ResolvePID(ctx, selected.PID)
+						if err != nil {
+							return err
+						}
+						target = t
+					}
+				}
+			} else {
+				targetArg := args[0]
+				val, intErr := strconv.Atoi(targetArg)
+
+				if intErr == nil && val > 0 {
+					var savedPortErr error
+					if val <= 65535 {
+						t, portErr := res.ResolvePort(ctx, val)
+						if portErr == nil {
+							target = t
+						} else if !strings.Contains(portErr.Error(), util.ErrNoProcessFound.Error()) && !errors.Is(portErr, util.ErrNoProcessFound) {
+							// Surface permission or tool errors immediately
+							return portErr
+						} else {
+							savedPortErr = portErr
+						}
+					}
+
+					if target == nil {
+						t, pidErr := res.ResolvePID(ctx, val)
+						if pidErr != nil {
+							var noProcErr *resolver.NoProcessOnPortError
+							if savedPortErr != nil && errors.As(savedPortErr, &noProcErr) {
+								fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
+								cmd.SilenceErrors = true
+								return noProcErr
+							}
+							return fmt.Errorf("could not find listening port or active process for: %d (%w)", val, pidErr)
+						}
+						target = t
+					}
+				} else {
+					t, err := res.ResolveContainer(ctx, targetArg)
+					if err != nil {
+						return fmt.Errorf("argument %q is not a valid port, PID, or running container: %w", targetArg, err)
+					}
+					target = t
 				}
 			}
 
 			if target == nil {
-				t, pidErr := res.ResolvePID(ctx, val)
-				if pidErr != nil {
-					var noProcErr *resolver.NoProcessOnPortError
-					if savedPortErr != nil && errors.As(savedPortErr, &noProcErr) {
-						fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
-						cmd.SilenceErrors = true
-						return noProcErr
-					}
-					return fmt.Errorf("could not find listening port or active process for: %d (%w)", val, pidErr)
-				}
-				target = t
+				return errors.New("failed to resolve target")
 			}
 
-			// Discover pre-existing child processes (e.g. Uvicorn reloader, Gunicorn workers)
-			inspector := resolver.NewProcessInspector("")
-			if flagTree {
-				target.Children = inspector.FindChildProcessTree(target.PID, 3)
-			} else {
-				if kids, err := inspector.FindChildPIDs(target.PID); err == nil {
-					target.Children = kids
+			// Discover pre-existing child processes (only for host PIDs)
+			if target.PID > 0 {
+				inspector := resolver.NewProcessInspector("")
+				if flagTree {
+					target.Children = inspector.FindChildProcessTree(target.PID, 3)
+				} else {
+					if kids, err := inspector.FindChildPIDs(target.PID); err == nil {
+						target.Children = kids
+					}
 				}
 			}
 
@@ -229,7 +327,13 @@ Zero configuration, zero wrappers, read-only.`,
 			if len(cmdSummary) > 60 {
 				cmdSummary = cmdSummary[:57] + "..."
 			}
-			if target.Port > 0 {
+			if target.Container != "" {
+				if target.Port > 0 {
+					fmt.Fprintf(os.Stderr, "%s Attaching to container %s on port :%d (%s)\n", headerTag, target.Container, target.Port, cmdSummary)
+				} else {
+					fmt.Fprintf(os.Stderr, "%s Attaching to container %s (%s)\n", headerTag, target.Container, cmdSummary)
+				}
+			} else if target.Port > 0 {
 				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d on port :%d (%s)\n", headerTag, target.PID, target.Port, cmdSummary)
 			} else {
 				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d (%s)\n", headerTag, target.PID, cmdSummary)
@@ -311,7 +415,11 @@ Zero configuration, zero wrappers, read-only.`,
 				}
 			}
 
-			fmt.Fprintf(os.Stderr, "\n%s Detached from PID %d cleanly.\n", headerTag, target.PID)
+			if target.Container != "" {
+				fmt.Fprintf(os.Stderr, "\n%s Detached from container %s cleanly.\n", headerTag, target.Container)
+			} else {
+				fmt.Fprintf(os.Stderr, "\n%s Detached from PID %d cleanly.\n", headerTag, target.PID)
+			}
 			return nil
 		},
 	}

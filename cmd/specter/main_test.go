@@ -56,3 +56,15 @@ func TestCLI_VersionSubcommand(t *testing.T) {
 		t.Fatalf("unexpected error executing version command: %v", err)
 	}
 }
+
+func TestCLI_ZeroArgsAccepted(t *testing.T) {
+	cmd := newRootCmd()
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	if err != nil && bytes.Contains([]byte(err.Error()), []byte("accepts 1 arg(s)")) {
+		t.Fatalf("unexpected arg count error: %v", err)
+	}
+}

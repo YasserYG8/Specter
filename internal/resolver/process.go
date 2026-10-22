@@ -107,17 +107,54 @@ func NewDefaultResolver(runner CommandRunner, procRoot string) *DefaultResolver 
 // ResolvePort resolves a listening TCP port to an inspected Target.
 func (dr *DefaultResolver) ResolvePort(ctx context.Context, port int) (*source.Target, error) {
 	pid, err := dr.portResolver.ResolvePortToPID(ctx, port)
-	if err != nil {
-		return nil, err
-	}
-
-	target, err := dr.inspector.InspectPID(ctx, pid)
-	if err != nil {
+	if err == nil && pid > 0 {
+		target, inspectErr := dr.inspector.InspectPID(ctx, pid)
+		if inspectErr == nil {
+			target.Port = port
+			// Check if host PID is docker-proxy forwarding a container
+			cmdStr := strings.Join(target.Cmdline, " ")
+			if strings.Contains(cmdStr, "docker-proxy") {
+				if containers, cErr := DiscoverDockerContainers(ctx, dr.portResolver.runner); cErr == nil {
+					if c, m := FindContainerByPort(containers, port); c != nil {
+						target.Container = c.PrimaryName()
+						target.Cmdline = []string{c.Image, fmt.Sprintf("(port %d->%d)", port, m.ContainerPort)}
+						return target, nil
+					}
+				}
+			}
+			return target, nil
+		}
 		// Fallback target with just port and PID if /proc inspection is restricted
 		return &source.Target{Port: port, PID: pid}, nil
 	}
-	target.Port = port
-	return target, nil
+
+	// Host PID lookup failed (or was permission-denied / not found in WSL2 /proc table).
+	// Check if an active Docker container maps this port before giving up!
+	if containers, cErr := DiscoverDockerContainers(ctx, dr.portResolver.runner); cErr == nil {
+		if c, m := FindContainerByPort(containers, port); c != nil {
+			return &source.Target{
+				Port:      port,
+				PID:       0,
+				Container: c.PrimaryName(),
+				Cmdline:   []string{c.Image, fmt.Sprintf("(port %d->%d)", port, m.ContainerPort)},
+			}, nil
+		}
+	}
+
+	return nil, err
+}
+
+// ResolveContainer inspects an active Docker container target by name or ID.
+func (dr *DefaultResolver) ResolveContainer(ctx context.Context, nameOrID string) (*source.Target, error) {
+	c, err := InspectDockerContainer(ctx, dr.portResolver.runner, nameOrID)
+	if err != nil {
+		return nil, err
+	}
+	return &source.Target{
+		PID:       0,
+		Container: c.PrimaryName(),
+		Cmdline:   []string{c.Image},
+	}, nil
 }
 
 // ResolvePID inspects an explicitly provided process ID.
@@ -128,4 +165,9 @@ func (dr *DefaultResolver) ResolvePID(ctx context.Context, pid int) (*source.Tar
 // DiscoverListeningPorts discovers all currently listening TCP ports using ss or lsof.
 func (dr *DefaultResolver) DiscoverListeningPorts(ctx context.Context) ([]ListeningPort, error) {
 	return dr.portResolver.DiscoverListeningPorts(ctx)
+}
+
+// DiscoverServices discovers active services combining host ports and Docker containers.
+func (dr *DefaultResolver) DiscoverServices(ctx context.Context) ([]DiscoveredService, error) {
+	return dr.portResolver.DiscoverServices(ctx)
 }
