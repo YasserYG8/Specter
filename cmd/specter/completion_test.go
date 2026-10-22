@@ -328,3 +328,35 @@ func TestValidArgsFunction_ContainerCompletions(t *testing.T) {
 		t.Errorf("expected only phpmyadmin for prefix 'php', got %v", filtered)
 	}
 }
+
+func TestValidArgsFunction_ProjectCompletions(t *testing.T) {
+	origPortFunc := portDiscoveryFunc
+	t.Cleanup(func() {
+		portDiscoveryFunc = origPortFunc
+	})
+
+	mockPorts := []resolver.ListeningPort{
+		{
+			Port:        3000,
+			PID:         1234,
+			ProcessName: "node",
+			ProjectName: "example-app",
+		},
+	}
+
+	portDiscoveryFunc = func(ctx context.Context) ([]resolver.ListeningPort, error) {
+		return mockPorts, nil
+	}
+
+	cmd := newRootCmd()
+
+	completions, _ := cmd.ValidArgsFunction(cmd, []string{}, "")
+	if len(completions) != 2 {
+		t.Fatalf("expected 2 completions (port + project), got %d: %v", len(completions), completions)
+	}
+
+	filtered, _ := cmd.ValidArgsFunction(cmd, []string{}, "ex")
+	if len(filtered) != 1 || !strings.HasPrefix(filtered[0], "example-app") {
+		t.Errorf("expected only example-app for prefix 'ex', got %v", filtered)
+	}
+}

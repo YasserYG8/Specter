@@ -64,7 +64,7 @@ func TestParseDockerPorts(t *testing.T) {
 }
 
 func TestParseDockerContainers(t *testing.T) {
-	rawJSON := `{"ID":"13cbb067d0f2","Names":"phpmyadmin","Image":"phpmyadmin:latest","Ports":"0.0.0.0:8080->80/tcp, [::]:8080->80/tcp","State":"running","Status":"Up 2 hours"}
+	rawJSON := `{"ID":"13cbb067d0f2","Names":"phpmyadmin","Image":"phpmyadmin:latest","Ports":"0.0.0.0:8080->80/tcp, [::]:8080->80/tcp","Labels":"com.docker.compose.project=soa,com.docker.compose.service=phpmyadmin","State":"running","Status":"Up 2 hours"}
 {"ID":"7c59f3358e6a","Names":"mysql_db","Image":"mysql:8.4","Ports":"0.0.0.0:3306->3306/tcp","State":"running","Status":"Up 2 hours"}
 {"ID":"deadbeef1234","Names":"stopped_app","Image":"redis:alpine","Ports":"0.0.0.0:6379->6379/tcp","State":"exited","Status":"Exited (0) 5 hours ago"}
 `
@@ -87,9 +87,21 @@ func TestParseDockerContainers(t *testing.T) {
 	if len(containers[0].Ports) != 1 || containers[0].Ports[0].HostPort != 8080 {
 		t.Errorf("unexpected ports for phpmyadmin: %+v", containers[0].Ports)
 	}
+	if containers[0].ComposeProject() != "soa" {
+		t.Errorf("expected compose project 'soa', got %q", containers[0].ComposeProject())
+	}
+	if containers[0].ComposeService() != "phpmyadmin" {
+		t.Errorf("expected compose service 'phpmyadmin', got %q", containers[0].ComposeService())
+	}
+	if containers[0].ProjectDisplayName() != "soa/phpmyadmin" {
+		t.Errorf("expected display name 'soa/phpmyadmin', got %q", containers[0].ProjectDisplayName())
+	}
 
 	if containers[1].PrimaryName() != "mysql_db" {
 		t.Errorf("expected container name mysql_db, got %s", containers[1].PrimaryName())
+	}
+	if containers[1].ProjectDisplayName() != "mysql_db" {
+		t.Errorf("expected display name fallback 'mysql_db', got %q", containers[1].ProjectDisplayName())
 	}
 }
 
@@ -98,10 +110,10 @@ func TestInspectDockerContainer(t *testing.T) {
 		if name == "docker" && len(args) > 1 && args[0] == "inspect" {
 			target := args[1]
 			if target == "phpmyadmin" {
-				return []byte("13cbb067d0f2d2fe0254f6167a9990e4094ee00a74f4e7590e24ebf2c7fdc283\t/phpmyadmin\ttrue\tphpmyadmin:latest"), nil
+				return []byte("13cbb067d0f2d2fe0254f6167a9990e4094ee00a74f4e7590e24ebf2c7fdc283\t/phpmyadmin\ttrue\tphpmyadmin:latest\t{\"com.docker.compose.project\":\"soa\",\"com.docker.compose.service\":\"phpmyadmin\"}"), nil
 			}
 			if target == "stopped" {
-				return []byte("aabbccddeeff\t/stopped\tfalse\tredis:latest"), nil
+				return []byte("aabbccddeeff\t/stopped\tfalse\tredis:latest\tnull"), nil
 			}
 			return nil, errors.New("No such object")
 		}
@@ -110,7 +122,7 @@ func TestInspectDockerContainer(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 1. Running container
+	// 1. Running container with compose labels
 	c, err := InspectDockerContainer(ctx, mockRunner, "phpmyadmin")
 	if err != nil {
 		t.Fatalf("unexpected error inspecting running container: %v", err)
@@ -120,6 +132,9 @@ func TestInspectDockerContainer(t *testing.T) {
 	}
 	if c.Image != "phpmyadmin:latest" {
 		t.Errorf("expected phpmyadmin:latest, got %s", c.Image)
+	}
+	if c.ProjectDisplayName() != "soa/phpmyadmin" {
+		t.Errorf("expected display name 'soa/phpmyadmin', got %q", c.ProjectDisplayName())
 	}
 
 	// 2. Stopped container

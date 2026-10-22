@@ -115,6 +115,7 @@ Zero configuration, zero wrappers, read-only.`,
 
 			var completions []string
 			seenContainers := make(map[string]bool)
+			seenProjects := make(map[string]bool)
 
 			for _, p := range ports {
 				if p.Port > 0 {
@@ -129,7 +130,11 @@ Zero configuration, zero wrappers, read-only.`,
 						cleanProc = strings.TrimSpace(cleanProc)
 
 						var desc string
-						if p.ContainerName != "" {
+						if p.ProjectName != "" && p.ContainerName != "" {
+							desc = fmt.Sprintf("docker:%s (%s)", p.ProjectName, p.Image)
+						} else if p.ProjectName != "" {
+							desc = fmt.Sprintf("%s (%s)", p.ProjectName, cleanProc)
+						} else if p.ContainerName != "" {
 							if p.Image != "" {
 								desc = fmt.Sprintf("docker:%s (%s)", p.ContainerName, p.Image)
 							} else {
@@ -159,6 +164,14 @@ Zero configuration, zero wrappers, read-only.`,
 							desc = fmt.Sprintf("docker container (%s)", p.Image)
 						}
 						completions = append(completions, fmt.Sprintf("%s\t%s", p.ContainerName, desc))
+					}
+				}
+
+				if p.ProjectName != "" && !seenProjects[p.ProjectName] {
+					seenProjects[p.ProjectName] = true
+					if toComplete == "" || strings.HasPrefix(strings.ToLower(p.ProjectName), strings.ToLower(toComplete)) {
+						desc := fmt.Sprintf("project on :%d", p.Port)
+						completions = append(completions, fmt.Sprintf("%s\t%s", p.ProjectName, desc))
 					}
 				}
 			}
@@ -279,9 +292,47 @@ Zero configuration, zero wrappers, read-only.`,
 				} else {
 					t, err := res.ResolveContainer(ctx, targetArg)
 					if err != nil {
-						return fmt.Errorf("argument %q is not a valid port, PID, or running container: %w", targetArg, err)
+						// Check if targetArg matches an active project name
+						if services, sErr := res.DiscoverServices(ctx); sErr == nil {
+							for _, s := range services {
+								if strings.EqualFold(s.ProjectName, targetArg) {
+									if s.Kind == resolver.ServiceKindDocker {
+										if s.Port > 0 {
+											if dt, dErr := res.ResolvePort(ctx, s.Port); dErr == nil {
+												target = dt
+												break
+											}
+										}
+										cName := s.ContainerName
+										if cName == "" {
+											cName = s.ContainerID
+										}
+										if dt, dErr := res.ResolveContainer(ctx, cName); dErr == nil {
+											target = dt
+											break
+										}
+									} else {
+										if s.Port > 0 {
+											if ht, hErr := res.ResolvePort(ctx, s.Port); hErr == nil {
+												target = ht
+												break
+											}
+										} else if s.PID > 0 {
+											if ht, hErr := res.ResolvePID(ctx, s.PID); hErr == nil {
+												target = ht
+												break
+											}
+										}
+									}
+								}
+							}
+						}
+						if target == nil {
+							return fmt.Errorf("argument %q is not a valid port, PID, container, or project: %w", targetArg, err)
+						}
+					} else {
+						target = t
 					}
-					target = t
 				}
 			}
 

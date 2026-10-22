@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -23,6 +24,8 @@ type ListeningPort struct {
 	ContainerName string
 	ContainerPort int
 	Image         string
+	ProjectName   string
+	WorkingDir    string
 }
 
 // NoProcessOnPortError is returned when a target TCP port has no listening process.
@@ -148,6 +151,7 @@ func mergeDockerContainersIntoListeningPorts(ports []ListeningPort, containers [
 					ports[idx].ContainerPort = m.ContainerPort
 					ports[idx].ProcessName = c.PrimaryName()
 					ports[idx].Image = c.Image
+					ports[idx].ProjectName = c.ProjectDisplayName()
 				}
 			} else {
 				// Append container port mapping
@@ -158,6 +162,7 @@ func mergeDockerContainersIntoListeningPorts(ports []ListeningPort, containers [
 					ContainerPort: m.ContainerPort,
 					ProcessName:   c.PrimaryName(),
 					Image:         c.Image,
+					ProjectName:   c.ProjectDisplayName(),
 					IsProtected:   false,
 				}
 				ports = append(ports, newPort)
@@ -191,6 +196,8 @@ type DiscoveredService struct {
 	ContainerID   string
 	ContainerName string
 	Image         string
+	ProjectName   string
+	WorkingDir    string
 	Description   string
 	IsProtected   bool
 }
@@ -215,9 +222,20 @@ func (r *PortResolver) DiscoverServices(ctx context.Context) ([]DiscoveredServic
 				ContainerID:   p.ContainerID,
 				Image:         p.Image,
 				ProcessName:   p.ContainerName,
+				ProjectName:   p.ProjectName,
 				Description:   fmt.Sprintf("docker:%s (%s)", p.ContainerName, p.Image),
 			})
 		} else {
+			var workingDir string
+			var projectName string
+			if p.PID > 0 {
+				procCwd := fmt.Sprintf("/proc/%d/cwd", p.PID)
+				if link, err := os.Readlink(procCwd); err == nil && link != "" {
+					workingDir = link
+					projectName = DetectProjectName(link)
+				}
+			}
+
 			desc := p.ProcessName
 			if p.IsProtected {
 				desc = "protected process (run with sudo)"
@@ -231,6 +249,8 @@ func (r *PortResolver) DiscoverServices(ctx context.Context) ([]DiscoveredServic
 				Port:        p.Port,
 				PID:         p.PID,
 				ProcessName: p.ProcessName,
+				ProjectName: projectName,
+				WorkingDir:  workingDir,
 				Description: desc,
 				IsProtected: p.IsProtected,
 			})
@@ -250,6 +270,7 @@ func (r *PortResolver) DiscoverServices(ctx context.Context) ([]DiscoveredServic
 			ContainerID:   c.ShortID(),
 			Image:         c.Image,
 			ProcessName:   cName,
+			ProjectName:   c.ProjectDisplayName(),
 			Description:   fmt.Sprintf("%s (%s)", cName, c.Image),
 		})
 	}

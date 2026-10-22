@@ -22,13 +22,60 @@ type ContainerPortMapping struct {
 
 // DockerContainer represents an active container discovered via Docker.
 type DockerContainer struct {
-	ID       string                 `json:"ID"`
-	Names    string                 `json:"Names"`
-	Image    string                 `json:"Image"`
-	PortsRaw string                 `json:"Ports"`
-	State    string                 `json:"State"`
-	Status   string                 `json:"Status"`
-	Ports    []ContainerPortMapping `json:"-"`
+	ID        string                 `json:"ID"`
+	Names     string                 `json:"Names"`
+	Image     string                 `json:"Image"`
+	PortsRaw  string                 `json:"Ports"`
+	State     string                 `json:"State"`
+	Status    string                 `json:"Status"`
+	LabelsRaw string                 `json:"Labels"`
+	LabelsMap map[string]string      `json:"-"`
+	Ports     []ContainerPortMapping `json:"-"`
+}
+
+// ParseLabels parses a comma-separated key=value string of Docker labels.
+func ParseLabels(labelsRaw string) map[string]string {
+	labels := make(map[string]string)
+	for _, item := range strings.Split(labelsRaw, ",") {
+		item = strings.TrimSpace(item)
+		if idx := strings.Index(item, "="); idx != -1 {
+			k := strings.TrimSpace(item[:idx])
+			v := strings.TrimSpace(item[idx+1:])
+			labels[k] = v
+		}
+	}
+	return labels
+}
+
+// ComposeProject returns the Docker Compose project label if set.
+func (c *DockerContainer) ComposeProject() string {
+	if c.LabelsMap != nil && c.LabelsMap["com.docker.compose.project"] != "" {
+		return c.LabelsMap["com.docker.compose.project"]
+	}
+	labels := ParseLabels(c.LabelsRaw)
+	return labels["com.docker.compose.project"]
+}
+
+// ComposeService returns the Docker Compose service label if set.
+func (c *DockerContainer) ComposeService() string {
+	if c.LabelsMap != nil && c.LabelsMap["com.docker.compose.service"] != "" {
+		return c.LabelsMap["com.docker.compose.service"]
+	}
+	labels := ParseLabels(c.LabelsRaw)
+	return labels["com.docker.compose.service"]
+}
+
+// ProjectDisplayName returns "project/service" if compose labels exist, or primary container name.
+func (c *DockerContainer) ProjectDisplayName() string {
+	proj := c.ComposeProject()
+	svc := c.ComposeService()
+	if proj != "" && svc != "" {
+		return fmt.Sprintf("%s/%s", proj, svc)
+	}
+	if proj != "" {
+		return proj
+	}
+	return c.PrimaryName()
 }
 
 // PrimaryName returns the first container name stripped of any leading slash.
@@ -183,7 +230,7 @@ func InspectDockerContainer(ctx context.Context, runner CommandRunner, target st
 	tCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
 	defer cancel()
 
-	out, err := runner(tCtx, "docker", "inspect", target, "--format", "{{.Id}}\t{{.Name}}\t{{.State.Running}}\t{{.Config.Image}}")
+	out, err := runner(tCtx, "docker", "inspect", target, "--format", "{{.Id}}\t{{.Name}}\t{{.State.Running}}\t{{.Config.Image}}\t{{json .Config.Labels}}")
 	if err != nil {
 		return nil, fmt.Errorf("container %q not found or inspect failed: %w", target, err)
 	}
@@ -205,16 +252,22 @@ func InspectDockerContainer(ctx context.Context, runner CommandRunner, target st
 		image = parts[3]
 	}
 
+	var labelsMap map[string]string
+	if len(parts) >= 5 && parts[4] != "" && parts[4] != "null" {
+		_ = json.Unmarshal([]byte(parts[4]), &labelsMap)
+	}
+
 	if !isRunning {
 		return nil, fmt.Errorf("container %q exists but is not running", target)
 	}
 
 	return &DockerContainer{
-		ID:     id,
-		Names:  name,
-		Image:  image,
-		State:  "running",
-		Status: "Up",
+		ID:        id,
+		Names:     name,
+		Image:     image,
+		State:     "running",
+		Status:    "Up",
+		LabelsMap: labelsMap,
 	}, nil
 }
 
