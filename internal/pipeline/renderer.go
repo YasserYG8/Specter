@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -36,17 +35,15 @@ func (r *Renderer) Render(entry *Entry) string {
 
 	useColor := !r.opts.NoColor && !color.NoColor
 
-	// 2. Check structured JSON log (single-line only)
-	if len(entry.Lines) == 1 {
-		if jl := ParseJSONLog(entry.Lines[0]); jl != nil {
-			if r.opts.ForceJSON {
-				return entry.Lines[0]
-			}
-			return FormatSingleLineJSON(jl, useColor)
+	// 2. Structured JSON log (single line)
+	if jl := ParseJSONLog(text); jl != nil {
+		if r.opts.ForceJSON {
+			return text
 		}
+		return FormatSingleLineJSON(jl, useColor)
 	}
 
-	// 3. Multi-line stack trace
+	// 3. Multi-line entry (backward compatibility if multi-line is passed)
 	if entry.IsTrace && len(entry.Lines) > 1 {
 		var sb strings.Builder
 		for i, line := range entry.Lines {
@@ -55,10 +52,8 @@ func (r *Renderer) Render(entry *Entry) string {
 			}
 			if useColor && !HasANSI(line) {
 				if i == 0 {
-					// Error header in bold red
 					sb.WriteString(color.New(color.FgRed, color.Bold).Sprint(line))
 				} else {
-					// Stack trace frames in dim gray
 					sb.WriteString(color.HiBlackString(line))
 				}
 			} else {
@@ -68,35 +63,42 @@ func (r *Renderer) Render(entry *Entry) string {
 		return sb.String()
 	}
 
-	// 4. Pre-colored lines pass-through without re-coloring
+	// 4. Pre-colored lines or disabled color: pass through untouched
 	if HasANSI(text) || !useColor {
 		return text
 	}
 
-	// 5. Single line with recognized severity level
+	// 5. Continuation stack frames render dimmed
+	if entry.IsFrame {
+		return color.HiBlackString(text)
+	}
+
+	// 6. HTTP Access Log lines styling based on detected status code
+	if statusCode, ok := DetectHTTPStatus(text); ok {
+		if statusCode >= 500 {
+			return color.RedString(text)
+		}
+		if statusCode >= 400 {
+			return color.YellowString(text)
+		}
+		if statusCode >= 200 && statusCode < 300 {
+			return color.GreenString(text)
+		}
+		if statusCode >= 300 && statusCode < 400 {
+			return color.CyanString(text)
+		}
+	}
+
+	// 7. Standard Severity Level styling
 	switch entry.Level {
 	case SeverityError:
+		if entry.IsTrace {
+			return color.New(color.FgRed, color.Bold).Sprint(text)
+		}
 		return color.RedString(text)
 	case SeverityWarn:
 		return color.YellowString(text)
 	case SeverityInfo:
-		// Style HTTP access log lines (2xx subtle green, 3xx subtle cyan)
-		if m := httpStatusRegex.FindStringSubmatch(text); len(m) > 0 {
-			codeStr := m[1]
-			if codeStr == "" && len(m) > 2 {
-				codeStr = m[2]
-			}
-			if code, err := strconv.Atoi(codeStr); err == nil {
-				if code >= 200 && code < 300 {
-					return color.GreenString(text)
-				}
-				if code >= 300 && code < 400 {
-					return color.CyanString(text)
-				}
-			}
-			return color.CyanString(text)
-		}
-		// Subtly highlight [INFO] token if present, else plain
 		if strings.Contains(strings.ToLower(text), "info") {
 			return color.CyanString(text)
 		}

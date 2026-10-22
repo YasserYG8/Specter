@@ -1,0 +1,6 @@
+info: Microsoft.AspNetCore.Hosting.Diagnostics[1]
+      Request starting HTTP/2 POST https://localhost:5001/api/v1/orders application/json 145
+info: Microsoft.AspNetCore.Routing.EndpointMiddleware[0]
+      Executing endpoint 'Server.Controllers.OrdersController.Create (Server)'
+warn: Microsoft.AspNetCore.Session.DistributedSession[2]
+      Accessing expired session token b81b0a72-7fca

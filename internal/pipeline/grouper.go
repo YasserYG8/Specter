@@ -2,76 +2,61 @@ package pipeline
 
 import (
 	"context"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
-// DefaultTraceIdleTimeout is the silence threshold to flush an accumulated stack trace.
-const DefaultTraceIdleTimeout = 200 * time.Millisecond
-
-// Entry represents an atomic log record (a single line or an assembled multi-line stack trace).
-type Entry struct {
-	Lines     []string
-	FD        int
-	PID       int
-	Level     Severity
-	IsTrace   bool
-	IsJSON    bool
-	IsPartial bool
-	TS        time.Time
-}
-
-// Text returns the joined lines of the entry.
-func (e *Entry) Text() string {
-	return strings.Join(e.Lines, "\n")
-}
-
-var (
-	// Stack trace frame matchers
-	nodeFrameRegex       = regexp.MustCompile(`^\s+at\s+(?:async\s+)?[^\s(]+(?:\s*\(.*\))?`)
-	javaFrameRegex       = regexp.MustCompile(`^\s+at\s+[a-zA-Z0-9_$.]+\([a-zA-Z0-9_$.]+:\d+\)|^\s*Caused by:|\s*\.\.\.\s+\d+\s+more`)
-	pythonTraceHeader    = regexp.MustCompile(`^Traceback \(most recent call last\):`)
-	pythonFrameRegex     = regexp.MustCompile(`^\s+File\s+"[^"]+",\s+line\s+\d+`)
-	pythonExceptionRegex = regexp.MustCompile(`^(?:[a-zA-Z0-9_.]+\.)?[A-Z][a-zA-Z0-9_]*(?:Error|Exception|Fault|Warning|Interrupt|Exit|Iteration|Failure|Timeout)(?::.*)?$`)
-	goPanicRegex         = regexp.MustCompile(`^panic:\s+|goroutine\s+\d+\s+\[`)
+// Constants for stream processing bounds
+const (
+	// MaxLineLength caps the maximum processed line length (64 KB).
+	MaxLineLength = 65536
+	// TruncationMarker is appended to lines exceeding MaxLineLength.
+	TruncationMarker = " ... [specter: truncated at 64KB]"
+	// DefaultTraceIdleTimeout is retained for interface compatibility.
+	DefaultTraceIdleTimeout = 200 * time.Millisecond
 )
 
-// isTraceHeader detects lines that initiate an error stack trace.
-func isTraceHeader(line string) bool {
-	clean := StripANSI(line)
-	if pythonTraceHeader.MatchString(clean) || goPanicRegex.MatchString(clean) {
-		return true
-	}
-	cleanLower := strings.ToLower(clean)
-	sanitized := benignErrorRegex.ReplaceAllString(cleanLower, "")
-	if (strings.Contains(sanitized, "error:") || strings.Contains(sanitized, "exception:") || strings.HasPrefix(strings.TrimSpace(sanitized), "error")) &&
-		!strings.HasPrefix(clean, " ") && !strings.HasPrefix(clean, "\t") {
-		return true
-	}
-	return false
+// Entry represents an atomic stream log record emitted immediately to the terminal.
+type Entry struct {
+	Lines                []string
+	FD                   int
+	PID                  int
+	Level                Severity
+	IsTrace              bool // True if part of an exception or stack trace
+	IsFrame              bool // True if continuation frame (styled dimmed)
+	IsRecordContinuation bool // True if continuation of a record (e.g. .NET message or trace frame)
+	IsJSON               bool
+	IsPartial            bool
+	TS                   time.Time
+	Raw                  string
+	Safe                 string
+	MatchedGrep          bool
 }
 
-// isTraceContinuation checks if a line is a stack frame continuation.
-func isTraceContinuation(line string) bool {
-	clean := StripANSI(line)
-	if nodeFrameRegex.MatchString(clean) || javaFrameRegex.MatchString(clean) || pythonFrameRegex.MatchString(clean) || pythonExceptionRegex.MatchString(clean) {
-		return true
+// Text returns the text representation of the entry.
+func (e *Entry) Text() string {
+	if len(e.Lines) > 0 {
+		return strings.Join(e.Lines, "\n")
 	}
-	// Indented lines following a trace header often belong to the trace
-	if strings.HasPrefix(clean, "    ") || strings.HasPrefix(clean, "\t") {
-		return true
-	}
-	return false
+	return e.Safe
 }
 
-// StackTraceGrouper aggregates consecutive stack trace lines into a single Entry.
+// StreamRecord tracks active state for an ongoing record on a specific (PID, FD) stream.
+type streamRecord struct {
+	level       Severity
+	inTrace     bool
+	isDotNet    bool
+	isGoDump    bool
+	matchedGrep bool
+}
+
+// StackTraceGrouper operates as a real-time, zero-buffering record and continuation state machine.
 type StackTraceGrouper struct {
 	idleTimeout time.Duration
 }
 
-// NewStackTraceGrouper creates a grouper with the given timeout.
+// NewStackTraceGrouper creates a grouper instance.
 func NewStackTraceGrouper(idleTimeout time.Duration) *StackTraceGrouper {
 	if idleTimeout <= 0 {
 		idleTimeout = DefaultTraceIdleTimeout
@@ -79,24 +64,145 @@ func NewStackTraceGrouper(idleTimeout time.Duration) *StackTraceGrouper {
 	return &StackTraceGrouper{idleTimeout: idleTimeout}
 }
 
-type grouperBuffer struct {
-	entry      *Entry
-	lastActive time.Time
-	inTrace    bool
+// isTraceHeader reports whether a line initiates an unhandled exception or stack trace.
+func isTraceHeader(line string) bool {
+	clean := StripANSI(line)
+	_, _, inTrace, _ := isRecordStart(clean)
+	return inTrace
 }
 
-// Group processes a stream of Lines and emits grouped Entry instances.
+// isRecordStart determines if a clean line initiates a new log record.
+func isRecordStart(clean string) (bool, Severity, bool, bool) {
+	if clean == "" {
+		return false, SeverityNone, false, false
+	}
+
+	// 1. Root trace headers
+	if pythonTraceHeaderRegex.MatchString(clean) {
+		return true, SeverityError, true, false
+	}
+	if goPanicHeaderRegex.MatchString(clean) {
+		return true, SeverityError, true, strings.Contains(clean, "goroutine")
+	}
+
+	// 2. Structured JSON log
+	if ParseJSONLog(clean) != nil {
+		return true, DetectSeverity(clean), false, false
+	}
+
+	// 3. .NET Kestrel two-line records (e.g. "info: Category[1]")
+	if dotnetLevelRegex.MatchString(clean) {
+		return true, DetectSeverity(clean), false, false
+	}
+
+	// 4. Prominent level markers or Monolog / Gin prefixes
+	if bracketedLevelRegex.MatchString(clean) || monologLevelRegex.MatchString(clean) || columnarLevelRegex.MatchString(clean) {
+		return true, DetectSeverity(clean), false, false
+	}
+
+	// 5. HTTP access log line
+	if _, isHTTP := DetectHTTPStatus(clean); isHTTP {
+		return true, DetectSeverity(clean), false, false
+	}
+
+	// 6. Positional word after timestamp
+	if positionalWordRegex.MatchString(clean) {
+		return true, DetectSeverity(clean), false, false
+	}
+
+	// 7. General uncaught exception or error pattern at line start (unindented)
+	if !strings.HasPrefix(clean, " ") && !strings.HasPrefix(clean, "\t") {
+		cleanLower := strings.ToLower(clean)
+		if strings.Contains(cleanLower, "exception:") || strings.Contains(cleanLower, "error:") || strings.Contains(cleanLower, "fatal error:") {
+			return true, SeverityError, true, false
+		}
+	}
+
+	return false, SeverityNone, false, false
+}
+
+// isContinuation determines if a line continues the active record or stack trace.
+func isContinuation(clean string, rec *streamRecord) (bool, bool, bool) {
+	if rec == nil {
+		return false, false, false
+	}
+
+	// Case 1: .NET two-line record continuation (indented message)
+	if rec.isDotNet {
+		if strings.HasPrefix(clean, "   ") || strings.HasPrefix(clean, "\t") {
+			return true, false, true // continues record, but is not a stack frame
+		}
+		rec.isDotNet = false
+	}
+
+	// Case 2: Active stack trace / exception continuation
+	if rec.inTrace {
+		// Blank lines inside active Python trace or Go dump continue the record
+		if clean == "" {
+			return true, false, true
+		}
+
+		// Java frames
+		if javaFrameRegex.MatchString(clean) {
+			return true, true, true
+		}
+
+		// Node.js frames
+		if nodeFrameRegex.MatchString(clean) {
+			return true, true, true
+		}
+
+		// Python frames & exception chain
+		if pythonFrameRegex.MatchString(clean) {
+			return true, true, true
+		}
+		if pythonChainHeader.MatchString(clean) {
+			return true, false, true
+		}
+		if pythonTraceHeaderRegex.MatchString(clean) {
+			return true, false, true
+		}
+		// Python trailing exception line (closes the trace)
+		if pythonTrailerRegex.MatchString(clean) {
+			return true, false, true
+		}
+
+		// Go goroutine dumps
+		if rec.isGoDump {
+			if goGoroutineFileLine.MatchString(clean) {
+				return true, true, true
+			}
+			if goGoroutineFunc.MatchString(clean) {
+				return true, false, true
+			}
+			if strings.HasPrefix(clean, "\t") {
+				return true, true, true
+			}
+		}
+
+		// PHP / GDB numbered frames (#0 /var/www/...)
+		if numberedFrameRegex.MatchString(clean) {
+			return true, true, true
+		}
+
+		// Any indented line following an active trace header is part of the trace
+		if strings.HasPrefix(clean, "  ") || strings.HasPrefix(clean, "\t") {
+			return true, true, true
+		}
+	}
+
+	return false, false, false
+}
+
+// Group processes a stream of Lines and immediately emits Entries with inherited context (zero buffering).
 func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan Entry {
 	out := make(chan Entry, 1024)
 
 	go func() {
 		defer close(out)
 
-		buffers := make(map[streamKey]*grouperBuffer)
+		records := make(map[streamKey]*streamRecord)
 		var mu sync.Mutex
-
-		ticker := time.NewTicker(30 * time.Millisecond)
-		defer ticker.Stop()
 
 		sendEntry := func(e Entry) bool {
 			select {
@@ -107,29 +213,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 			}
 		}
 
-		flushEntry := func(gb *grouperBuffer) bool {
-			if gb.entry != nil {
-				// Re-classify level if not already set
-				if gb.entry.Level == SeverityNone {
-					for _, l := range gb.entry.Lines {
-						lvl := DetectSeverity(l)
-						if lvl != SeverityNone {
-							gb.entry.Level = lvl
-							break
-						}
-					}
-				}
-				if gb.entry.IsTrace && gb.entry.Level < SeverityError {
-					gb.entry.Level = SeverityError
-				}
-				e := *gb.entry
-				gb.entry = nil
-				gb.inTrace = false
-				return sendEntry(e)
-			}
-			return true
-		}
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -137,44 +220,34 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 
 			case line, ok := <-in:
 				if !ok {
-					// Input channel closed: flush all pending buffers
-					mu.Lock()
-					for _, gb := range buffers {
-						if !flushEntry(gb) {
-							break
-						}
-					}
-					mu.Unlock()
 					return
 				}
 
 				key := streamKey{pid: line.PID, fd: line.FD}
 				mu.Lock()
-				gb, exists := buffers[key]
-				if !exists {
-					gb = &grouperBuffer{}
-					buffers[key] = gb
-				}
+				rec := records[key]
 
 				now := line.TS
 				if now.IsZero() {
 					now = time.Now()
 				}
-				gb.lastActive = now
+
+				// Enforce bounded length safety and sanitize non-SGR sequences
+				rawText := line.Text
+				safeText := SanitizeTerminalOutput(CapLineLength(rawText, MaxLineLength, TruncationMarker))
+				cleanText := StripANSI(safeText)
 
 				if line.IsPartial {
-					// Partial line: flush any pending trace and emit partial immediately
-					if !flushEntry(gb) {
-						mu.Unlock()
-						return
-					}
+					// Partial lines emit immediately without breaking ongoing record state
 					partialEntry := Entry{
-						Lines:     []string{line.Text},
+						Lines:     []string{safeText},
 						FD:        line.FD,
 						PID:       line.PID,
-						Level:     DetectSeverity(line.Text),
+						Level:     DetectSeverity(cleanText),
 						IsPartial: true,
 						TS:        now,
+						Raw:       rawText,
+						Safe:      safeText,
 					}
 					mu.Unlock()
 					if !sendEntry(partialEntry) {
@@ -183,70 +256,94 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 					continue
 				}
 
-				// Check if this line continues an active stack trace
-				if gb.inTrace && isTraceContinuation(line.Text) {
-					gb.entry.Lines = append(gb.entry.Lines, line.Text)
-					gb.entry.IsTrace = true
-					if pythonExceptionRegex.MatchString(StripANSI(line.Text)) {
-						if !flushEntry(gb) {
-							mu.Unlock()
-							return
-						}
+				// Check if this line continues an existing active record
+				cont, isFrame, isRecCont := isContinuation(cleanText, rec)
+				if cont && rec != nil {
+					entry := Entry{
+						Lines:                []string{safeText},
+						FD:                   line.FD,
+						PID:                  line.PID,
+						Level:                rec.level,
+						IsTrace:              rec.inTrace,
+						IsFrame:              isFrame,
+						IsRecordContinuation: isRecCont,
+						IsPartial:            false,
+						TS:                   now,
+						Raw:                  rawText,
+						Safe:                 safeText,
+						MatchedGrep:          rec.matchedGrep,
 					}
-					mu.Unlock()
-					continue
-				}
 
-				// If we were in a trace and this line does not continue it, flush the trace
-				if gb.inTrace {
-					if !flushEntry(gb) {
-						mu.Unlock()
+					// If trailing Python exception closes trace
+					if pythonTrailerRegex.MatchString(cleanText) && !pythonTraceHeaderRegex.MatchString(cleanText) {
+						rec.inTrace = false
+					}
+					// If .NET 2-line record completed
+					if rec.isDotNet {
+						rec.isDotNet = false
+						records[key] = nil
+					}
+
+					mu.Unlock()
+					if !sendEntry(entry) {
 						return
 					}
-				}
-
-				// Check if this line starts a new stack trace
-				if isTraceHeader(line.Text) {
-					gb.inTrace = true
-					gb.entry = &Entry{
-						Lines:     []string{line.Text},
-						FD:        line.FD,
-						PID:       line.PID,
-						Level:     DetectSeverity(line.Text),
-						IsTrace:   true,
-						IsPartial: false,
-						TS:        now,
-					}
-					mu.Unlock()
 					continue
 				}
 
-				// Normal single-line entry
-				normalEntry := Entry{
-					Lines:     []string{line.Text},
-					FD:        line.FD,
-					PID:       line.PID,
-					Level:     DetectSeverity(line.Text),
-					IsTrace:   false,
-					IsPartial: false,
-					TS:        now,
-				}
-				mu.Unlock()
-				if !sendEntry(normalEntry) {
-					return
+				// Check if line starts a new record
+				isStart, lvl, inTrace, isGoDump := isRecordStart(cleanText)
+				if isStart {
+					isDotNet := dotnetLevelRegex.MatchString(cleanText)
+					rec = &streamRecord{
+						level:    lvl,
+						inTrace:  inTrace,
+						isDotNet: isDotNet,
+						isGoDump: isGoDump,
+					}
+					records[key] = rec
+
+					entry := Entry{
+						Lines:                []string{safeText},
+						FD:                   line.FD,
+						PID:                  line.PID,
+						Level:                lvl,
+						IsTrace:              inTrace,
+						IsFrame:              false,
+						IsRecordContinuation: false,
+						IsJSON:               ParseJSONLog(cleanText) != nil,
+						IsPartial:            false,
+						TS:                   now,
+						Raw:                  rawText,
+						Safe:                 safeText,
+					}
+					mu.Unlock()
+					if !sendEntry(entry) {
+						return
+					}
+					continue
 				}
 
-			case now := <-ticker.C:
-				mu.Lock()
-				for _, gb := range buffers {
-					if gb.entry != nil && now.Sub(gb.lastActive) >= g.idleTimeout {
-						if !flushEntry(gb) {
-							mu.Unlock()
-							return
-						}
-					}
-				}
+				// Unclassified plain text (resets active record state)
+				records[key] = nil
 				mu.Unlock()
+
+				plainEntry := Entry{
+					Lines:                []string{safeText},
+					FD:                   line.FD,
+					PID:                  line.PID,
+					Level:                DetectSeverity(cleanText),
+					IsTrace:              false,
+					IsFrame:              false,
+					IsRecordContinuation: false,
+					IsPartial:            false,
+					TS:                   now,
+					Raw:                  rawText,
+					Safe:                 safeText,
+				}
+				if !sendEntry(plainEntry) {
+					return
+				}
 			}
 		}
 	}()

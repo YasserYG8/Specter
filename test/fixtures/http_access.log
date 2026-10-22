@@ -1,0 +1,10 @@
+GET /api/v1/users 200 12.345 ms - 1024
+POST /api/v1/checkout 500 45.120 ms - 230
+GET /dashboard 200 in 14ms
+POST /api/auth/login 401 in 8ms
+[GIN] 2026/10/18 - 12:00:00 | 200 |    1.234ms |       127.0.0.1 | GET      "/api/v1/items"
+[GIN] 2026/10/18 - 12:00:01 | 404 |     800µs |       127.0.0.1 | POST     "/unknown"
+INFO:     127.0.0.1:52134 - "GET /items/5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52135 - "POST /submit HTTP/1.1" 500 Internal Server Error
+2026-10-18 10:00:00.123  INFO 1234 --- [nio-8080-exec-1] o.s.web.servlet.DispatcherServlet        : Completed 200 OK
+2026-10-18 10:00:01.456 ERROR 1234 --- [nio-8080-exec-2] o.s.web.servlet.DispatcherServlet        : Completed 500 INTERNAL_SERVER_ERROR

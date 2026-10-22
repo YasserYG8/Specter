@@ -27,27 +27,35 @@ func TestStackTraceGrouper_NodeJSError(t *testing.T) {
 		result = append(result, e)
 	}
 
-	if len(result) != 2 {
-		t.Fatalf("expected 2 entries (1 trace group + 1 normal line), got %d", len(result))
+	// In streaming record machine: 4 lines arrive -> 4 entries emitted immediately
+	if len(result) != 4 {
+		t.Fatalf("expected 4 entries emitted immediately in real-time, got %d", len(result))
 	}
 
-	traceEntry := result[0]
-	if !traceEntry.IsTrace {
-		t.Errorf("expected IsTrace to be true")
+	// First line is error header
+	if !result[0].IsTrace || result[0].IsFrame {
+		t.Errorf("expected result[0] to be trace header: %+v", result[0])
 	}
-	if len(traceEntry.Lines) != 3 {
-		t.Errorf("expected 3 lines in trace group, got %d", len(traceEntry.Lines))
-	}
-	if traceEntry.Level != SeverityError {
-		t.Errorf("expected SeverityError, got %v", traceEntry.Level)
+	if result[0].Level != SeverityError {
+		t.Errorf("expected SeverityError for trace header, got %v", result[0].Level)
 	}
 
-	normalEntry := result[1]
-	if normalEntry.IsTrace {
-		t.Errorf("expected normal entry to not be a trace")
+	// Following 2 lines are continuation frames inheriting SeverityError
+	for i := 1; i <= 2; i++ {
+		if !result[i].IsTrace || !result[i].IsFrame {
+			t.Errorf("expected result[%d] to be continuation frame: %+v", i, result[i])
+		}
+		if result[i].Level != SeverityError {
+			t.Errorf("expected result[%d] to inherit SeverityError, got %v", i, result[i].Level)
+		}
 	}
-	if len(normalEntry.Lines) != 1 || normalEntry.Lines[0] != "Server restarted successfully" {
-		t.Errorf("unexpected normal entry: %+v", normalEntry)
+
+	// Last line is normal line
+	if result[3].IsTrace || result[3].IsFrame {
+		t.Errorf("expected result[3] to not be trace or frame: %+v", result[3])
+	}
+	if result[3].Text() != "Server restarted successfully" {
+		t.Errorf("unexpected text in result[3]: %q", result[3].Text())
 	}
 }
 
@@ -72,14 +80,19 @@ func TestStackTraceGrouper_PythonTraceback(t *testing.T) {
 		result = append(result, e)
 	}
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 grouped entry, got %d", len(result))
+	if len(result) != 4 {
+		t.Fatalf("expected 4 streamed entries, got %d", len(result))
 	}
 	if !result[0].IsTrace {
-		t.Errorf("expected IsTrace true")
+		t.Errorf("expected IsTrace true on header")
 	}
-	if len(result[0].Lines) != 4 {
-		t.Errorf("expected 4 lines in group, got %d", len(result[0].Lines))
+	for i := 1; i < 4; i++ {
+		if !result[i].IsTrace || !result[i].IsFrame {
+			t.Errorf("expected result[%d] to be continuation frame", i)
+		}
+		if result[i].Level != SeverityError {
+			t.Errorf("expected result[%d] to inherit SeverityError", i)
+		}
 	}
 }
 
@@ -87,7 +100,6 @@ func TestStackTraceGrouper_IdleFlush(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Short 50ms timeout
 	grouper := NewStackTraceGrouper(50 * time.Millisecond)
 	in := make(chan Line, 10)
 
@@ -98,13 +110,9 @@ func TestStackTraceGrouper_IdleFlush(t *testing.T) {
 	select {
 	case entry := <-entries:
 		if !entry.IsTrace {
-			t.Errorf("expected IsTrace to be true")
+			t.Errorf("expected IsTrace true on immediate emit")
 		}
-		if len(entry.Lines) != 1 {
-			t.Errorf("expected 1 line in flushed group, got %d", len(entry.Lines))
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for idle flush of trace")
+	case <-time.After(1 * time.Second):
+		t.Fatalf("expected immediate emission of entry without waiting for timeout")
 	}
-	close(in)
 }

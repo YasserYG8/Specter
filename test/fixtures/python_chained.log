@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "app/services/database.py", line 45, in connect
+    conn = raw_connect(host, port)
+  File "app/drivers/sql.py", line 12, in raw_connect
+    raise ConnectionRefusedError("Connection refused by database host")
+ConnectionRefusedError: Connection refused by database host
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "app/main.py", line 89, in handle_request
+    db.connect()
+  File "app/services/database.py", line 48, in connect
+    raise ServiceUnavailableError("Failed to initialize database pool") from e
+app.exceptions.ServiceUnavailableError: Failed to initialize database pool

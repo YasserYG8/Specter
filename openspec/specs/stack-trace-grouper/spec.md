@@ -1,28 +1,29 @@
 # stack-trace-grouper Specification
 
 ## Purpose
-Groups multi-line exception stack traces across Node.js, Python, and Java into atomic Entry records to prevent broken logs or fragmented filter matches.
+Associates multi-line exception stack trace continuation frames in real-time with their parent log records across Node.js, Python, Java, Go, and PHP without buffering latency.
 
 ## Requirements
 
 ### Requirement: Multi-Line Stack Trace Grouping
-The grouper SHALL detect consecutive lines belonging to an exception or error traceback and bind them into a single multi-line entry.
+The grouper SHALL operate as a zero-buffering streaming state machine per (PID, FD) stream, immediately emitting each line while associating continuation frames with the active record so they inherit the record's level, filter fate, and dimmed styling.
 
-#### Scenario: Node.js error trace grouping
-- **WHEN** an initial error line is followed by lines matching `^\s+at\s+.*`
-- **THEN** all frames are grouped with the initiating error header into one multi-line entry
+#### Scenario: Node.js error trace continuations
+- **WHEN** an initial error line is followed by indented lines matching `^\s+at\s+.*`
+- **THEN** the continuation frames inherit the parent error level and are styled as dimmed frames
 
-#### Scenario: Python traceback grouping
+#### Scenario: Python traceback continuations and trailing exception
 - **WHEN** a line starts with `Traceback (most recent call last):`
-- **THEN** following indented file lines and the trailing exception name are grouped as a single entry
+- **THEN** following indented file lines, subsequent exception chains ("During handling of..."), and the trailing unindented exception line inherit the parent trace record
 
-#### Scenario: Java exception grouping
-- **WHEN** a line contains an exception and is followed by indented `at ...` or `Caused by:` lines
-- **THEN** all cause chains and frames are grouped together
+#### Scenario: Java exception continuations and cause chains
+- **WHEN** a line initiates an exception and is followed by indented `at ...`, `Caused by:`, or `... N common frames omitted`
+- **THEN** all cause chains and frames inherit the active record
 
-### Requirement: Idle Flush on Incomplete Stack Traces
-The grouper SHALL flush any accumulated stack trace lines if no continuation line arrives within 200 milliseconds.
+#### Scenario: Go panic and goroutine dump
+- **WHEN** a goroutine dump starts with `goroutine \d+ \[...`
+- **THEN** alternating unindented function calls and tab-indented file:line entries inherit the trace record
 
-#### Scenario: Trace completed on stream silence
-- **WHEN** a stack trace is accumulating and 200ms passes without a new line
-- **THEN** the grouper flushes the accumulated group immediately
+#### Scenario: Guarding indented SQL and non-trace numbered lists
+- **WHEN** indented SQL statements or numbered list items (`#1 download assets`) occur outside an active trace header or lack code path references
+- **THEN** they are emitted as plain unclassified lines without inheriting trace styling

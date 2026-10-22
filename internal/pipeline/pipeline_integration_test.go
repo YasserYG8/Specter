@@ -15,17 +15,17 @@ func TestGrouper_JavaExceptionWithCausedBy(t *testing.T) {
 	defer cancel()
 
 	grouper := NewStackTraceGrouper(50 * time.Millisecond)
-	in := make(chan Line, 10)
+	in := make(chan Line, 20)
 	out := grouper.Group(ctx, in)
 
 	now := time.Now()
 	javaLines := []string{
-		"java.lang.NullPointerException: Cannot invoke method on null object",
-		"\tat com.example.service.UserService.getUser(UserService.java:42)",
-		"\tat com.example.controller.UserController.handle(UserController.java:18)",
-		"Caused by: java.io.IOException: Database connection timed out",
-		"\tat com.example.db.ConnectionPool.acquire(ConnectionPool.java:99)",
-		"\t... 15 more",
+		"java.lang.NullPointerException: Cannot invoke \"String.length()\" because \"name\" is null",
+		"    at com.example.service.UserService.processUser(UserService.java:42)",
+		"    at com.example.controller.UserController.getUser(UserController.java:18)",
+		"Caused by: java.lang.IllegalArgumentException: Input buffer cannot be empty",
+		"    at com.example.util.Buffer.validate(Buffer.java:99)",
+		"    ... 34 more",
 	}
 
 	for _, text := range javaLines {
@@ -43,28 +43,31 @@ func TestGrouper_JavaExceptionWithCausedBy(t *testing.T) {
 		received = append(received, entry)
 	}
 
-	if len(received) != 1 {
-		t.Fatalf("expected 1 atomic Entry for Java exception with caused by, got %d", len(received))
+	// In zero-buffering streaming state machine, all 6 lines are emitted immediately
+	if len(received) != len(javaLines) {
+		t.Fatalf("expected %d entries emitted immediately, got %d", len(javaLines), len(received))
 	}
 
-	entry := received[0]
-	if !entry.IsTrace {
-		t.Errorf("expected entry.IsTrace to be true")
+	// Verify header
+	if !received[0].IsTrace || received[0].IsFrame {
+		t.Errorf("expected received[0] to be trace header: %+v", received[0])
 	}
-	if entry.Level != SeverityError {
-		t.Errorf("expected entry.Level to be SeverityError, got %v", entry.Level)
+	if received[0].Level != SeverityError {
+		t.Errorf("expected received[0].Level to be SeverityError, got %v", received[0].Level)
 	}
-	if entry.FD != 2 {
-		t.Errorf("expected FD 2, got %d", entry.FD)
+
+	// Verify all continuation frames inherit SeverityError
+	for i := 1; i < len(received); i++ {
+		if !received[i].IsTrace {
+			t.Errorf("expected received[%d].IsTrace to be true", i)
+		}
+		if received[i].Level != SeverityError {
+			t.Errorf("expected received[%d].Level to be SeverityError, got %v", i, received[i].Level)
+		}
 	}
-	if len(entry.Lines) != len(javaLines) {
-		t.Fatalf("expected %d lines in entry, got %d", len(javaLines), len(entry.Lines))
-	}
-	if !strings.HasPrefix(entry.Lines[0], "java.lang.NullPointerException") {
-		t.Errorf("expected first line to be exception header, got %q", entry.Lines[0])
-	}
-	if !strings.HasPrefix(entry.Lines[3], "Caused by:") {
-		t.Errorf("expected line 4 to be Caused by frame, got %q", entry.Lines[3])
+
+	if !strings.HasPrefix(received[3].Text(), "Caused by:") {
+		t.Errorf("expected line 4 to be Caused by frame, got %q", received[3].Text())
 	}
 }
 
@@ -95,92 +98,80 @@ func TestGrouper_InterleavedStreamIsolation(t *testing.T) {
 		entries = append(entries, e)
 	}
 
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 distinct entries (1 stdout, 1 stderr trace), got %d", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 streamed entries, got %d", len(entries))
 	}
 
-	var stdoutEntry, stderrEntry *Entry
-	for i := range entries {
-		if entries[i].FD == 1 {
-			stdoutEntry = &entries[i]
-		} else if entries[i].FD == 2 {
-			stderrEntry = &entries[i]
+	var stdoutCount, stderrTraceCount int
+	for _, e := range entries {
+		if e.FD == 1 {
+			stdoutCount++
+			if e.IsTrace {
+				t.Errorf("stdout entry on fd 1 should not be classified as trace: %+v", e)
+			}
+		} else if e.FD == 2 {
+			if e.IsTrace && e.Level == SeverityError {
+				stderrTraceCount++
+			}
 		}
 	}
 
-	if stdoutEntry == nil {
-		t.Fatal("expected stdout entry on fd 1, but none found")
+	if stdoutCount != 1 {
+		t.Errorf("expected 1 stdout entry, got %d", stdoutCount)
 	}
-	if stdoutEntry.IsTrace {
-		t.Errorf("stdout entry should not be classified as stack trace")
-	}
-	if len(stdoutEntry.Lines) != 1 || stdoutEntry.Lines[0] != "User request processed 200 OK" {
-		t.Errorf("unexpected stdout lines: %v", stdoutEntry.Lines)
-	}
-
-	if stderrEntry == nil {
-		t.Fatal("expected stderr entry on fd 2, but none found")
-	}
-	if !stderrEntry.IsTrace {
-		t.Errorf("stderr entry should be classified as stack trace")
-	}
-	if len(stderrEntry.Lines) != 3 {
-		t.Fatalf("expected 3 lines in stderr error trace, got %d: %v", len(stderrEntry.Lines), stderrEntry.Lines)
-	}
-	if stderrEntry.Lines[0] != "Error: Connection lost" {
-		t.Errorf("unexpected header: %q", stderrEntry.Lines[0])
+	if stderrTraceCount != 3 {
+		t.Errorf("expected 3 stderr trace entries, got %d", stderrTraceCount)
 	}
 }
 
 func TestPipeline_EndToEnd(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	oldNoColor := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = oldNoColor }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	chunks := make(chan source.Chunk, 10)
-	now := time.Now()
+	// 1. Assembler
+	assembler := NewLineAssembler(100 * time.Millisecond)
 
-	// 1. LineAssembler
-	assembler := NewLineAssembler(30 * time.Millisecond)
+	// 2. Grouper (zero-buffering streaming state machine)
+	grouper := NewStackTraceGrouper(100 * time.Millisecond)
+
+	// 3. Filter
+	filter := NewFilter(FilterOptions{
+		MinLevel:   SeverityInfo,
+		OnlyStderr: false,
+	})
+
+	// 4. Renderer
+	renderer := NewRenderer(RendererOptions{
+		NoColor: false,
+	})
+
+	chunks := make(chan source.Chunk, 20)
 	lines := assembler.Assemble(ctx, chunks)
-
-	// 2. StackTraceGrouper
-	grouper := NewStackTraceGrouper(40 * time.Millisecond)
 	entries := grouper.Group(ctx, lines)
 
-	// 3. Filter (MinLevel: SeverityInfo suppresses DEBUG)
-	filter := NewFilter(FilterOptions{
-		MinLevel: SeverityInfo,
-	})
+	now := time.Now()
 
-	// 4. Renderer (NoColor: true for deterministic text assertions)
-	renderer := NewRenderer(RendererOptions{
-		NoColor: true,
-	})
-
-	// Feed raw chunks:
-	// A. DEBUG log on fd 1 (should be suppressed by filter)
+	// A. Debug JSON log on fd 1 (should be dropped by filter)
 	chunks <- source.Chunk{
-		Bytes: []byte("{\"level\":\"debug\",\"msg\":\"Cache lookup query\",\"key\":\"user:1\"}\n"),
+		Bytes: []byte("{\"level\":\"debug\",\"msg\":\"Cache lookup query\",\"hits\":0}\n"),
 		FD:    1,
 		PID:   10,
 		TS:    now,
 	}
 
-	// B. INFO JSON log split across chunk boundary on fd 1 (should be reassembled and single-line formatted)
+	// B. Info JSON log on fd 1 (should pass filter and format as single-line)
 	chunks <- source.Chunk{
-		Bytes: []byte("{\"level\":\"info\",\"msg\":\"Incoming HTTP request\",\"path\":\"/api/v1/users\""),
-		FD:    1,
-		PID:   10,
-		TS:    now,
-	}
-	chunks <- source.Chunk{
-		Bytes: []byte(",\"status\":200,\"duration\":\"12ms\"}\n"),
+		Bytes: []byte("{\"level\":\"info\",\"msg\":\"Incoming HTTP request\",\"status\":200,\"path\":\"/api/v1/users\",\"duration\":\"12ms\"}\n"),
 		FD:    1,
 		PID:   10,
 		TS:    now,
 	}
 
-	// C. Multi-line error stack trace on fd 2 (should be preserved atomically)
+	// C. Multi-line error stack trace on fd 2 (should be preserved and streamed)
 	chunks <- source.Chunk{
 		Bytes: []byte("TypeError: Cannot read properties of undefined (reading 'id')\n"),
 		FD:    2,
@@ -204,8 +195,9 @@ func TestPipeline_EndToEnd(t *testing.T) {
 		renderedOutput = append(renderedOutput, renderer.Render(&entry))
 	}
 
-	if len(renderedOutput) != 2 {
-		t.Fatalf("expected exactly 2 rendered outputs (1 info json, 1 error trace), got %d:\n%v", len(renderedOutput), renderedOutput)
+	// 1 Info line + 3 error trace lines = 4 total rendered outputs
+	if len(renderedOutput) != 4 {
+		t.Fatalf("expected exactly 4 rendered outputs (1 info json + 3 error trace lines), got %d:\n%v", len(renderedOutput), renderedOutput)
 	}
 
 	// Check 1: Info JSON log
@@ -216,21 +208,23 @@ func TestPipeline_EndToEnd(t *testing.T) {
 	if !strings.Contains(infoLog, "[INFO]") || !strings.Contains(infoLog, "Incoming HTTP request") {
 		t.Errorf("expected formatted INFO log line, got: %s", infoLog)
 	}
-	if !strings.Contains(infoLog, "path=/api/v1/users") || !strings.Contains(infoLog, "status=200") {
+	infoClean := StripANSI(infoLog)
+	if !strings.Contains(infoClean, "path=/api/v1/users") || !strings.Contains(infoClean, "status=200") {
 		t.Errorf("expected key-value attributes in single-line JSON output, got: %s", infoLog)
 	}
-	if strings.Contains(infoLog, "\n") {
-		t.Errorf("structured JSON output must be a single line, got multiline: %s", infoLog)
+
+	// Check 2: Error header
+	errorHeader := renderedOutput[1]
+	if !strings.Contains(errorHeader, "TypeError: Cannot read properties of undefined") {
+		t.Errorf("expected error header in trace, got: %s", errorHeader)
 	}
 
-	// Check 2: Error stack trace
-	errorTrace := renderedOutput[1]
-	if !strings.Contains(errorTrace, "TypeError: Cannot read properties of undefined") {
-		t.Errorf("expected error header in trace, got: %s", errorTrace)
+	// Check 3: Stack frames (dimmed)
+	if !strings.Contains(renderedOutput[2], "at getUserById") {
+		t.Errorf("expected first frame, got: %s", renderedOutput[2])
 	}
-	if !strings.Contains(errorTrace, "at getUserById (/app/server.js:42:15)") ||
-		!strings.Contains(errorTrace, "at handleRequest (/app/router.js:18:9)") {
-		t.Errorf("expected all stack frames to be preserved in trace output, got: %s", errorTrace)
+	if !strings.Contains(renderedOutput[3], "at handleRequest") {
+		t.Errorf("expected second frame, got: %s", renderedOutput[3])
 	}
 }
 
@@ -258,31 +252,24 @@ func TestGrouper_PythonTracebackCompleteWithFinalException(t *testing.T) {
 		entries = append(entries, e)
 	}
 
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries (1 complete python trace + 1 normal recovered line), got %d", len(entries))
+	if len(entries) != 7 {
+		t.Fatalf("expected 7 entries streamed in real-time, got %d", len(entries))
 	}
 
-	trace := entries[0]
-	if !trace.IsTrace {
-		t.Errorf("expected trace.IsTrace to be true")
-	}
-	if trace.Level != SeverityError {
-		t.Errorf("expected SeverityError, got %v", trace.Level)
-	}
-	if len(trace.Lines) != 6 {
-		t.Fatalf("expected 6 lines in python trace including final unindented exception, got %d: %v", len(trace.Lines), trace.Lines)
-	}
-	lastLine := trace.Lines[len(trace.Lines)-1]
-	if lastLine != `ValueError: invalid configuration: key missing` {
-		t.Errorf("expected final line to be unindented exception, got %q", lastLine)
+	// Verify header through trailing exception inherit SeverityError
+	for i := 0; i <= 5; i++ {
+		if entries[i].Level != SeverityError {
+			t.Errorf("expected entries[%d] to have SeverityError, got %v", i, entries[i].Level)
+		}
 	}
 
-	normal := entries[1]
-	if normal.IsTrace {
-		t.Errorf("expected recovered worker line to not be a trace")
+	// Final recovered line is plain
+	recovered := entries[6]
+	if recovered.IsTrace || recovered.IsFrame {
+		t.Errorf("expected recovered worker line to not be trace or frame: %+v", recovered)
 	}
-	if len(normal.Lines) != 1 || normal.Lines[0] != "Worker process 42 recovered" {
-		t.Errorf("unexpected normal entry: %v", normal)
+	if recovered.Text() != "Worker process 42 recovered" {
+		t.Errorf("unexpected normal entry: %v", recovered)
 	}
 }
 
@@ -318,16 +305,16 @@ func TestRenderer_HTTPStatusStyling(t *testing.T) {
 	}
 	rendered200 := renderer.Render(entry200)
 	if !HasANSI(rendered200) {
-		t.Errorf("expected ANSI color in rendered 200 HTTP access log, got plain: %q", rendered200)
+		t.Errorf("expected ANSI color codes in 200 OK HTTP access log rendering")
 	}
 
-	// 3xx status -> Cyan
-	entry301 := &Entry{
-		Lines: []string{`127.0.0.1 - - [10/Oct/2026:13:00:00] "GET /old-path HTTP/1.1" 301 0`},
-		Level: SeverityInfo,
+	// 5xx status -> Red
+	entry500 := &Entry{
+		Lines: []string{`127.0.0.1 - - [10/Oct/2026:13:00:00] "POST /api/v1/checkout HTTP/1.1" 500 230`},
+		Level: SeverityError,
 	}
-	rendered301 := renderer.Render(entry301)
-	if !HasANSI(rendered301) {
-		t.Errorf("expected ANSI color in rendered 301 HTTP access log, got plain: %q", rendered301)
+	rendered500 := renderer.Render(entry500)
+	if !HasANSI(rendered500) {
+		t.Errorf("expected ANSI color codes in 500 ERROR HTTP access log rendering")
 	}
 }

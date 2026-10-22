@@ -1,0 +1,23 @@
+-- Edge Case 1: Indented SQL Query (must NOT trigger trace continuation)
+SELECT users.id, users.email, profiles.bio
+  FROM users
+  LEFT JOIN profiles ON users.id = profiles.user_id
+ WHERE users.status = 'active'
+ ORDER BY users.created_at DESC;
+
+-- Edge Case 2: Numbered build steps (must NOT trigger trace continuation)
+Step summary:
+#1 download assets from CDN
+#2 compile typescript sources
+#3 bundle client distribution
+
+-- Edge Case 3: False positive status-like numbers (must NOT trigger HTTP severity)
+Query returned 200 users from regional cache
+Operation took 404 ms to complete database handshake
+Warning: memory limit at 500 MB threshold
+
+-- Edge Case 4: Terminal escape injection attempts (must be sanitized safely)
+Malicious log: \x1b]0;HACKED_WINDOW_TITLE\x07Normal text after OSC title
+CSI cursor jump: \x1b[2J\x1b[HClearing screen attempt
+Terminal bell: \x07Beep attempt
+Safe color preserved: \x1b[32mClean Green Text\x1b[0m

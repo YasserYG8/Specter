@@ -1,0 +1,8 @@
+java.lang.RuntimeException: Failed to process inbound HTTP payload
+	at com.example.service.OrderProcessor.process(OrderProcessor.java:54)
+	at com.example.controller.OrderController.submit(OrderController.java:29)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+Caused by: java.sql.SQLException: Deadlock found when trying to get lock; try restarting transaction
+	at com.mysql.cj.jdbc.exceptions.SQLError.createSQLException(SQLError.java:130)
+	at com.mysql.cj.jdbc.ClientPreparedStatement.executeInternal(ClientPreparedStatement.java:930)
+	... 18 common frames omitted

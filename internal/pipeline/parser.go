@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -35,90 +34,112 @@ func (s Severity) String() string {
 
 // ParseSeverity parses a severity name case-insensitively.
 func ParseSeverity(s string) Severity {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug", "trace", "verbose":
-		return SeverityDebug
-	case "info":
-		return SeverityInfo
-	case "warn", "warning":
-		return SeverityWarn
-	case "error", "err", "fatal", "critical", "panic":
-		return SeverityError
-	default:
-		return SeverityNone
-	}
+	return ParseRankedSeverity(s)
 }
-
-var (
-	// Regex matching ANSI escape sequences
-	ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-
-	// Regex matching standard HTTP access log status codes (e.g. "GET /path" 200, HTTP/1.1" 500)
-	httpStatusRegex = regexp.MustCompile(`"(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+[^"]+"\s+(\d{3})\b|HTTP/\d\.\d"\s+(\d{3})\b`)
-
-	// Common regex token patterns for explicit level markers
-	errorTokenRegex = regexp.MustCompile(`(?i)\b(?:error|fatal|panic|critical)\b|\[(?:ERROR|FATAL|PANIC|CRIT)\]|level=(?:error|fatal)`)
-	warnTokenRegex  = regexp.MustCompile(`(?i)\b(?:warn|warning)\b|\[(?:WARN|WARNING)\]|level=(?:warn|warning)`)
-	infoTokenRegex  = regexp.MustCompile(`(?i)\b(?:info)\b|\[INFO\]|level=info`)
-	debugTokenRegex = regexp.MustCompile(`(?i)\b(?:debug|trace)\b|\[(?:DEBUG|TRACE)\]|level=(?:debug|trace)`)
-
-	// Benign phrases containing the word "error" that should not trigger error classification
-	benignErrorRegex = regexp.MustCompile(`(?i)\b(?:no errors?|0 errors?|without errors?)\b`)
-)
 
 // HasANSI checks if the string contains terminal ANSI escape sequences.
 func HasANSI(s string) bool {
-	return ansiRegex.MatchString(s)
+	return ansiSGRRegex.MatchString(s) || anyANSIRegex.MatchString(s)
 }
 
-// StripANSI removes all ANSI escape sequences from a string.
-func StripANSI(s string) string {
-	return ansiRegex.ReplaceAllString(s, "")
+// DetectHTTPStatus parses HTTP status code from supported access log formats.
+// Requires method + path or framework completion tag to prevent false hits on arbitrary numbers.
+func DetectHTTPStatus(line string) (int, bool) {
+	// 1. Quoted request: "GET /api HTTP/1.1" 200
+	if m := httpQuotedRegex.FindStringSubmatch(line); len(m) > 3 {
+		if code, err := strconv.Atoi(m[3]); err == nil {
+			return code, true
+		}
+	}
+
+	// 2. Unquoted request: GET /api 200 (morgan dev, Next.js)
+	if m := httpUnquotedRegex.FindStringSubmatch(line); len(m) > 3 {
+		if code, err := strconv.Atoi(m[3]); err == nil {
+			return code, true
+		}
+	}
+
+	// 3. Gin access log: [GIN] ... | 200 | ... | GET "/path"
+	if m := httpGinRegex.FindStringSubmatch(line); len(m) > 1 {
+		if code, err := strconv.Atoi(m[1]); err == nil {
+			return code, true
+		}
+	}
+
+	// 4. Spring Boot: Completed 200 OK
+	if m := httpSpringRegex.FindStringSubmatch(line); len(m) > 1 {
+		if code, err := strconv.Atoi(m[1]); err == nil {
+			return code, true
+		}
+	}
+
+	return 0, false
 }
 
-// DetectSeverity examines line tokens, HTTP status codes, and tags to classify its log level.
+// DetectSeverity examines line tokens using confidence-ranked rules:
+// Rank 1: Structured JSON/logfmt key
+// Rank 2: Positional prefix / token
+// Rank 3: HTTP status code hint
+// Rank 4: Weak body keyword anchor (last resort)
 func DetectSeverity(line string) Severity {
 	clean := StripANSI(line)
+	if clean == "" {
+		return SeverityNone
+	}
 
-	// 1. Check HTTP access log status codes
-	if m := httpStatusRegex.FindStringSubmatch(clean); len(m) > 0 {
-		codeStr := m[1]
-		if codeStr == "" && len(m) > 2 {
-			codeStr = m[2]
+	// Rank 1: Structured Key (Highest Confidence)
+	if m := jsonLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		if lvl := ParseRankedSeverity(m[1]); lvl != SeverityNone {
+			return lvl
 		}
-		if code, err := strconv.Atoi(codeStr); err == nil {
-			if code >= 500 && code < 600 {
-				return SeverityError
-			}
-			if code >= 400 && code < 500 {
+	}
+	if m := logfmtLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		if lvl := ParseRankedSeverity(m[1]); lvl != SeverityNone {
+			return lvl
+		}
+	}
+
+	// Rank 2: Positional Token (High Confidence)
+	posLevel := SeverityNone
+	if m := bracketedLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	} else if m := monologLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	} else if m := columnarLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	} else if m := dotnetLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	} else if m := positionalWordRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	}
+
+	// Rank 3: HTTP Status Code Hint (Medium Confidence)
+	if statusCode, ok := DetectHTTPStatus(clean); ok {
+		if statusCode >= 500 {
+			return SeverityError
+		}
+		if statusCode >= 400 {
+			if posLevel < SeverityWarn {
 				return SeverityWarn
 			}
-			if code >= 200 && code < 400 {
-				return SeverityInfo
-			}
+			return posLevel
 		}
-	}
-
-	// Remove benign phrases (e.g. "no error", "0 errors", "without error") before error evaluation
-	sanitized := benignErrorRegex.ReplaceAllString(clean, "")
-	sanitizedLower := strings.ToLower(sanitized)
-
-	// 2. Explicit tokens (checked in order of importance: Error > Warn > Info > Debug)
-	if errorTokenRegex.MatchString(sanitized) {
-		return SeverityError
-	}
-	if warnTokenRegex.MatchString(clean) {
-		return SeverityWarn
-	}
-	if infoTokenRegex.MatchString(clean) {
+		if posLevel > SeverityInfo {
+			return posLevel
+		}
 		return SeverityInfo
 	}
-	if debugTokenRegex.MatchString(clean) {
-		return SeverityDebug
+
+	if posLevel != SeverityNone {
+		return posLevel
 	}
 
-	// 3. Fallback checks for keywords like Exception or Failed
-	if strings.Contains(sanitizedLower, "exception:") || strings.Contains(sanitizedLower, "failed") || strings.Contains(sanitizedLower, "failure") {
+	// Rank 4: Weak Body Keyword / Root Crash Anchor (Lowest Confidence, Last Resort)
+	if pythonTraceHeaderRegex.MatchString(clean) || goPanicHeaderRegex.MatchString(clean) {
+		return SeverityError
+	}
+	cleanLower := strings.ToLower(clean)
+	if strings.Contains(cleanLower, "exception:") || strings.Contains(cleanLower, "fatal error:") || strings.HasPrefix(cleanLower, "panic:") {
 		return SeverityError
 	}
 
