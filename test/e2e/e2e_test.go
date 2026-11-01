@@ -82,6 +82,15 @@ func getBinary(t *testing.T, envVar, pkgPath, binaryName string) string {
 	return outPath
 }
 
+// specterCommand runs Specter so that canceling ctx interrupts it, like Ctrl+C. The default for
+// exec.CommandContext is SIGKILL, which leaves strace attached and blocks the next attach to that process.
+func specterCommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 10 * time.Second
+	return cmd
+}
+
 // serverProcess represents a running testserver instance.
 type serverProcess struct {
 	Port int
@@ -197,7 +206,7 @@ func TestE2E_PortAttachment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -246,7 +255,7 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -297,7 +306,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--level=warn", "--no-color")
+		cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--level=warn", "--no-color")
 		var stdout, stderr safeBuffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -346,7 +355,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--grep=checkout-success", "--no-color")
+		cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--grep=checkout-success", "--no-color")
 		var stdout, stderr safeBuffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -395,7 +404,7 @@ func TestE2E_FilteringFlags(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--stderr", "--no-color")
+		cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--stderr", "--no-color")
 		var stdout, stderr safeBuffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -452,7 +461,7 @@ func TestE2E_TreeTracer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--tree", "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--tree", "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -497,7 +506,7 @@ func TestE2E_CleanDetachment(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -554,7 +563,7 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -621,7 +630,7 @@ func TestE2E_PreExistingChildWorker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
+	cmd := specterCommand(ctx, specterBin, strconv.Itoa(srv.Port), "--no-color")
 	var stdout, stderr safeBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
