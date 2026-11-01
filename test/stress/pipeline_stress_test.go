@@ -13,8 +13,22 @@ import (
 	"github.com/specter-cli/specter/internal/source"
 )
 
+// stressDeadline limits each stress test. It allows for the race detector, which slows the pipeline several times over.
+const stressDeadline = 2 * time.Minute
+
+// sendChunk delivers c unless ctx ends first. The pipeline stops reading when ctx ends,
+// so an unguarded send would block until the whole test binary times out.
+func sendChunk(ctx context.Context, chunks chan<- source.Chunk, c source.Chunk) bool {
+	select {
+	case chunks <- c:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func TestStress_PipelineBurst10k(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), stressDeadline)
 	defer cancel()
 
 	const totalLines = 10000
@@ -77,16 +91,21 @@ func TestStress_PipelineBurst10k(t *testing.T) {
 		if i%3 == 0 && len(bytes) > 20 {
 			// Split across 2 chunks to stress fragmentation handling
 			mid := len(bytes) / 2
-			chunks <- source.Chunk{Bytes: bytes[:mid], FD: 1, PID: 100, TS: time.Now()}
-			chunks <- source.Chunk{Bytes: bytes[mid:], FD: 1, PID: 100, TS: time.Now()}
-		} else {
-			chunks <- source.Chunk{Bytes: bytes, FD: 1, PID: 100, TS: time.Now()}
+			if !sendChunk(ctx, chunks, source.Chunk{Bytes: bytes[:mid], FD: 1, PID: 100, TS: time.Now()}) ||
+				!sendChunk(ctx, chunks, source.Chunk{Bytes: bytes[mid:], FD: 1, PID: 100, TS: time.Now()}) {
+				t.Fatalf("pipeline did not accept line %d of %d within %v", i, totalLines, stressDeadline)
+			}
+		} else if !sendChunk(ctx, chunks, source.Chunk{Bytes: bytes, FD: 1, PID: 100, TS: time.Now()}) {
+			t.Fatalf("pipeline did not accept line %d of %d within %v", i, totalLines, stressDeadline)
 		}
 	}
 	close(chunks)
 
 	consumerWG.Wait()
 	duration := time.Since(startTime)
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("pipeline did not finish within %v: %v", stressDeadline, err)
+	}
 
 	t.Logf("Processed %d / %d lines in %v (throughput: %.0f lines/sec)",
 		renderedCount, totalLines, duration, float64(renderedCount)/duration.Seconds())
@@ -111,7 +130,7 @@ func TestStress_PipelineBurst10k(t *testing.T) {
 }
 
 func TestStress_ConcurrentInterleaved(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), stressDeadline)
 	defer cancel()
 
 	const (
@@ -169,31 +188,20 @@ func TestStress_ConcurrentInterleaved(t *testing.T) {
 			for i := 0; i < linesPerWorker; i++ {
 				if workerID == 0 && i%50 == 0 {
 					// Worker 0 periodically emits multi-line stack traces on stderr
-					chunks <- source.Chunk{
-						Bytes: []byte("Traceback (most recent call last):\n"),
-						FD:    2,
-						PID:   pid,
-						TS:    now,
-					}
-					chunks <- source.Chunk{
-						Bytes: []byte("  File \"worker.py\", line 42, in process\n    raise RuntimeError(\"stress test\")\n"),
-						FD:    2,
-						PID:   pid,
-						TS:    now,
-					}
-					chunks <- source.Chunk{
-						Bytes: []byte("RuntimeError: stress test\n"),
-						FD:    2,
-						PID:   pid,
-						TS:    now,
+					for _, text := range []string{
+						"Traceback (most recent call last):\n",
+						"  File \"worker.py\", line 42, in process\n    raise RuntimeError(\"stress test\")\n",
+						"RuntimeError: stress test\n",
+					} {
+						if !sendChunk(ctx, chunks, source.Chunk{Bytes: []byte(text), FD: 2, PID: pid, TS: now}) {
+							return
+						}
 					}
 				} else {
 					// Normal stdout log
-					chunks <- source.Chunk{
-						Bytes: []byte(fmt.Sprintf("worker=%d seq=%d status=200 OK\n", workerID, i)),
-						FD:    1,
-						PID:   pid,
-						TS:    now,
+					text := fmt.Sprintf("worker=%d seq=%d status=200 OK\n", workerID, i)
+					if !sendChunk(ctx, chunks, source.Chunk{Bytes: []byte(text), FD: 1, PID: pid, TS: now}) {
+						return
 					}
 				}
 			}
@@ -203,6 +211,9 @@ func TestStress_ConcurrentInterleaved(t *testing.T) {
 	producerWG.Wait()
 	close(chunks)
 	consumerWG.Wait()
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("pipeline did not finish within %v: %v", stressDeadline, err)
+	}
 
 	mu.Lock()
 	normal := receivedNormal
