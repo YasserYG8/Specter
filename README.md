@@ -225,6 +225,12 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 
 ---
 
+## Contributing
+
+Contributions are welcome, especially native macOS and Windows support. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+---
+
 ## License
 
 [MIT](LICENSE)
