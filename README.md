@@ -27,28 +27,21 @@ When running backend microservices, dev servers, or background containers across
 
 Specter runs on Linux, and on Windows through WSL2.
 
-**Download a binary:**
-
-```bash
-curl -fsSL https://github.com/YasserYG8/Specter/releases/latest/download/specter_linux_amd64.tar.gz | tar -xz specter
-sudo install specter /usr/local/bin/
-```
-
-On ARM, use `specter_linux_arm64.tar.gz`. The [releases page](https://github.com/YasserYG8/Specter/releases) also has `.deb` and `.rpm` packages.
-
-**Or install with Go (1.26 or higher):**
+Install with Go (1.26 or higher):
 
 ```bash
 go install github.com/YasserYG8/Specter/cmd/specter@latest
 ```
 
-**Then set up the tools Specter uses:**
+This puts `specter` in `$(go env GOPATH)/bin`, so make sure that folder is on your `PATH`.
+
+Then set up the tools Specter uses:
 
 ```bash
 sudo apt install strace lsof iproute2
 ```
 
-Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process fails with `Operation not permitted` until you allow it. Either run `sudo specter 3000`, or see [Kernel Permissions](#kernel-permissions-ptrace_scope) for the other options.
+Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process fails with `Operation not permitted` until you allow it. Either run `sudo "$(which specter)" 3000`, or see [Kernel Permissions](#kernel-permissions-ptrace_scope) for the other options.
 
 ---
 
