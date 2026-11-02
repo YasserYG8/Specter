@@ -18,7 +18,7 @@ web
 
 ## Product Purpose
 
-- **What It Does:** Specter (`specter [port|pid|container|project]`) attaches non-invasively to any active server process or Docker container—or launches a zero-argument interactive terminal picker (`specter`)—and streams live `stdout` and `stderr` directly to the developer's terminal.
+- **What It Does:** Specter (`specter [port|pid|container|project]`) attaches read-only to any active server process or Docker container—or launches a zero-argument interactive terminal picker (`specter`)—and streams live `stdout` and `stderr` directly to the developer's terminal.
 - **Why It Exists:** Eliminates the workflow friction of locating hidden terminal sessions or restarting running processes just to inspect live logs, JSON records, or unhandled exceptions.
 - **What Success Means:** A developer runs `specter` or `specter 3000` and within milliseconds sees clean, color-coded, line-reassembled logs and grouped stack traces from an already running target with zero impact on the target process.
 
@@ -28,7 +28,7 @@ web
   - **Strictly Read-Only, Post-Hoc Attachment:** Attaches to *already running* processes without pre-wrapping commands, modifying code, injecting SDKs, or opening inbound network ports.
   - **Automatic Multi-Engine Source Selection:** Inspects `/proc/<pid>` and the local Docker daemon to automatically pick the right capture mechanism: `strace` (`ptrace` snooping on `write()` syscalls for descriptors 1 & 2), `docker logs`, `journalctl` (`_PID`), or direct `/proc/<pid>/fd` file tailing.
   - **Project-Aware Interactive Discovery:** Running `specter` with zero arguments scans active ports and containers, infers project names from working directories/git roots/container labels, and presents a keyboard-driven terminal selector (`TYPE`, `PORT`, `PROJECT`, `PROCESS / IMAGE`, `PATH / TARGET`).
-  - **Multi-Worker Tree Tracing (`--tree`) & Heuristic Log Pipeline:** Automatically discovers forked child worker PIDs (e.g., Gunicorn, Node cluster, Celery) and runs a streaming state machine that reassembles split multi-threaded lines, formats single-line JSON, highlights HTTP status codes, and keeps multi-line stack traces grouped during `--grep` and `--level` filtering.
+  - **Multi-Worker Tracing & Heuristic Log Pipeline:** Automatically discovers forked child worker PIDs (e.g., Gunicorn, Node cluster, Celery) and runs a streaming state machine that reassembles split multi-threaded lines, formats single-line JSON, highlights HTTP status codes, and keeps multi-line stack traces grouped during `--grep` and `--level` filtering.
 
 ## Operating Context
 
@@ -41,7 +41,7 @@ web
 - **Confirmed Capabilities:**
   - Zero-argument interactive discovery picker (`specter`) with non-interactive aligned table fallback for pipes/CI.
   - Target resolution by TCP port (`specter 3000`), PID (`specter 18492`), Docker container name/ID (`specter billing-api`), or project name (`specter auth-service`).
-  - Flags: `--level` (`-l`: `debug`, `info`, `warn`, `error`), `--grep` (`-g`: text/regex filter preserving stack traces), `--stderr` (fd 2 only), `--tree` (`-t`: child worker tree attachment), `--source` (`-s`: `docker`, `file`, `journal`, `strace`), `--json`, `--raw`, `--no-color`.
+  - Flags: `--level` (`-l`: `debug`, `info`, `warn`, `error`), `--grep` (`-g`: text/regex filter preserving stack traces), `--stderr` (fd 2 only), `--tree` (`-t`: also trace deeper descendants), `--source` (`-s`: `docker`, `file`, `journal`, `strace`), `--json`, `--raw`, `--no-color`.
   - Dynamic shell autocompletion (`specter completion [bash|zsh|fish|powershell]`) for active ports, containers, and projects.
   - Actionable diagnostic errors for Yama `ptrace_scope` restrictions and non-Linux hosts.
 - **Technical Constraints:**

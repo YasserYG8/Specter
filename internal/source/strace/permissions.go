@@ -33,7 +33,7 @@ func CheckStraceInstalled() error {
 	return &util.DiagnosticError{
 		Err:         util.ErrToolMissing,
 		Title:       "strace utility is not installed",
-		Explanation: "Specter relies on strace to capture stdout and stderr system calls non-invasively.",
+		Explanation: "Specter relies on strace to capture stdout and stderr system calls.",
 		Remediation: fmt.Sprintf("Install strace: %s", installCmd),
 	}
 }

@@ -44,7 +44,7 @@ arg or picker -> resolver -> source.Target -> selector -> Source
 
 **`internal/resolver`** produces a `source.Target`. It shells out to `lsof`, `ss`, and `docker`, and reads `/proc`. External commands and the proc root are injectable (`CommandRunner`, `procRoot`), which is how tests run on Windows without those tools. `discovery.go` and `project.go` supply the data for the picker and shell completions.
 
-**`internal/source/selector`** picks the capture engine, and the first match wins: `--source` override, Docker, systemd unit, regular file, then strace. `.agent/architecture.md` and the README list file before systemd, but the code is authoritative.
+**`internal/source/selector`** picks the capture engine, and the first match wins: `--source` override, Docker, systemd unit, regular file, then strace. `.agent/architecture.md` lists file before systemd, but the code is authoritative.
 
 **`internal/source/*`** contains the `docker`, `file`, `journal`, and `strace` implementations of the `source.Source` interface. They all emit the same `Chunk{Bytes, FD, PID, TS}`, so nothing downstream knows which source ran. If an auto-selected non-strace source fails immediately at startup, `main.go` falls back to strace. That fallback does not apply when `--source` is set.
 
