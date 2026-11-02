@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -71,9 +73,17 @@ func TestE2E_ConcurrentWorkersLoseNoLines(t *testing.T) {
 
 	httpGet(t, fmt.Sprintf("http://127.0.0.1:%d/workers?count=%d&lines=%d", srv.Port, workers, linesEach))
 
-	// Wait until the output stops growing
+	waitForOutputToSettle(t, stdout, 60*time.Second)
+	stop()
+
+	checkNumberedLines(t, stdout, stderr, workers, linesEach)
+}
+
+// waitForOutputToSettle returns once stdout has not grown for two seconds, or after the timeout.
+func waitForOutputToSettle(t *testing.T, stdout *safeBuffer, timeout time.Duration) {
+	t.Helper()
 	last, stableSince := -1, time.Now()
-	waitForCondition(t, 60*time.Second, func() bool {
+	waitForCondition(t, timeout, func() bool {
 		n := len(stdout.String())
 		if n != last {
 			last, stableSince = n, time.Now()
@@ -81,23 +91,31 @@ func TestE2E_ConcurrentWorkersLoseNoLines(t *testing.T) {
 		}
 		return time.Since(stableSince) > 2*time.Second
 	})
-	stop()
+}
 
+var numberedLineRegex = regexp.MustCompile(`^w\d+-\d+$`)
+
+// checkNumberedLines compares the lines w<worker>-<seq> that the test server's workers wrote with the lines that
+// reached stdout. Every line must arrive exactly once, and nothing else of that shape may appear.
+func checkNumberedLines(t *testing.T, stdout, stderr *safeBuffer, workers, linesEach int) {
+	t.Helper()
 	captured := map[string]int{}
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		line = strings.TrimSpace(line)
-		if len(line) >= 4 && line[0] == 'w' && line[2] == '-' {
+		if numberedLineRegex.MatchString(line) {
 			captured[line]++
 		}
 	}
 
 	var missing, duplicated []string
+	missingWorkers := map[int]bool{}
 	for w := 0; w < workers; w++ {
 		for i := 0; i < linesEach; i++ {
 			want := fmt.Sprintf("w%d-%d", w, i)
 			switch captured[want] {
 			case 0:
 				missing = append(missing, want)
+				missingWorkers[w] = true
 			case 1:
 			default:
 				duplicated = append(duplicated, want)
@@ -116,10 +134,44 @@ func TestE2E_ConcurrentWorkersLoseNoLines(t *testing.T) {
 			}
 			return s
 		}
-		t.Errorf("wrote %d lines, missing %d (e.g. %v), duplicated %d (e.g. %v), unexpected %d (e.g. %v)\nStderr:\n%s",
-			workers*linesEach, len(missing), sample(missing), len(duplicated), sample(duplicated),
+		t.Errorf("wrote %d lines, missing %d from %d of %d workers (e.g. %v), duplicated %d (e.g. %v), unexpected %d (e.g. %v)\nStderr:\n%s",
+			workers*linesEach, len(missing), len(missingWorkers), workers, sample(missing), len(duplicated), sample(duplicated),
 			len(unexpected), sample(unexpected), stderr.String())
 	}
+}
+
+// TestE2E_ManyExistingWorkers starts more workers than the old limit of 16 before Specter attaches. Workers that
+// start after attaching are followed by strace -f, so only workers that already exist need their own -p argument.
+func TestE2E_ManyExistingWorkers(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/YasserYG8/Specter/test/e2e/testserver", "testserver")
+
+	const workers, linesEach = 20, 50
+	release := filepath.Join(t.TempDir(), "release")
+	srv, cleanupServer := startTestServer(t, serverBin,
+		fmt.Sprintf("-workers=%d", workers), fmt.Sprintf("-lines=%d", linesEach), "-wait-file="+release)
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	stdout, stderr, stop := attachSpecter(t, ctx, specterBin, srv)
+	defer stop()
+
+	// The banner lists every worker, so the test also shows what the banner claims against what was traced
+	if !strings.Contains(stderr.String(), "Discovered active child worker(s)") {
+		t.Fatalf("Specter did not discover the workers.\nStderr:\n%s", stderr.String())
+	}
+
+	if err := os.WriteFile(release, []byte("go"), 0o644); err != nil {
+		t.Fatalf("failed to release the workers: %v", err)
+	}
+	waitForOutputToSettle(t, stdout, 60*time.Second)
+	stop()
+
+	checkNumberedLines(t, stdout, stderr, workers, linesEach)
 }
 
 func TestE2E_LongLines(t *testing.T) {

@@ -18,6 +18,8 @@ func main() {
 	spawnChildFlag := flag.Bool("spawn-child", false, "Spawn child worker at startup")
 	workerIDFlag := flag.Int("id", 0, "Worker id for the numbered-writer role")
 	workerLinesFlag := flag.Int("lines", 0, "Lines to write for the numbered-writer role")
+	workersFlag := flag.Int("workers", 0, "Start this many numbered-writer workers before the ready line")
+	waitFileFlag := flag.String("wait-file", "", "Numbered-writer workers wait for this file to exist before writing")
 	flag.Parse()
 
 	if *roleFlag == "child" || *roleFlag == "child-worker" {
@@ -25,7 +27,7 @@ func main() {
 		return
 	}
 	if *roleFlag == "numbered-writer" {
-		runNumberedWriter(*workerIDFlag, *workerLinesFlag)
+		runNumberedWriter(*workerIDFlag, *workerLinesFlag, *waitFileFlag)
 		return
 	}
 
@@ -47,6 +49,20 @@ func main() {
 				_ = childCmd.Wait()
 			}()
 		}
+	}
+
+	// Workers started here exist before the harness attaches Specter, so Specter has to find them by
+	// scanning for child processes, which strace -f cannot do for it.
+	for i := 0; i < *workersFlag; i++ {
+		cmd := exec.Command(os.Args[0], "-role=numbered-writer", fmt.Sprintf("-id=%d", i),
+			fmt.Sprintf("-lines=%d", *workerLinesFlag), "-wait-file="+*waitFileFlag)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: failed to start worker %d: %v\n", i, err)
+			os.Exit(1)
+		}
+		go func() { _ = cmd.Wait() }()
 	}
 
 	// Signal ready to stdout for test harness synchronization
@@ -208,8 +224,18 @@ func runChildWorker() {
 }
 
 // runNumberedWriter writes lines "w<id>-<seq>" to stdout, one write(2) per line, so a test can compare the
-// lines written with the lines captured.
-func runNumberedWriter(id, lines int) {
+// lines written with the lines captured. When waitFile is set, it first waits for that file to exist, so a test
+// can attach Specter while the worker is already running and then release it.
+func runNumberedWriter(id, lines int, waitFile string) {
+	if waitFile != "" {
+		deadline := time.Now().Add(2 * time.Minute)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(waitFile); err == nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 	for i := 0; i < lines; i++ {
 		_, _ = os.Stdout.WriteString(fmt.Sprintf("w%d-%d\n", id, i))
 	}

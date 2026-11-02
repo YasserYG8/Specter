@@ -12,6 +12,7 @@
 - `writev` calls are now captured.
 - Lines up to 64 KB now arrive whole. A longer write keeps its line boundary and ends with `[specter: N more bytes not captured]`.
 - A very long line of `strace` output no longer stops the capture.
+- Every worker process of a server is now traced. Specter used to trace only the first 16 and printed no warning, so with 20 workers running before it attached, the last 4 lost all their logs. While attached, all workers are slowed, not just 16 of them.
 
 ### Added
 

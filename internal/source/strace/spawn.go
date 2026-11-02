@@ -371,17 +371,12 @@ func BuildStraceArgs(target source.Target) []string {
 	}
 
 	seen := map[int]bool{target.PID: true}
-	// Limit to max 16 child PIDs to avoid exceeding strace argument constraints
-	maxChildren := 16
-	count := 0
+	// Every discovered worker gets its own -p. Workers started after attaching are followed by -f, but workers
+	// that already exist are not, so skipping any of them loses their logs with no message.
 	for _, childPID := range target.Children {
 		if childPID > 0 && !seen[childPID] {
 			seen[childPID] = true
 			args = append(args, "-p", strconv.Itoa(childPID))
-			count++
-			if count >= maxChildren {
-				break
-			}
 		}
 	}
 

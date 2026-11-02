@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,9 +64,9 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 		}
 	})
 
-	t.Run("caps children at max 16 to avoid excessive arguments", func(t *testing.T) {
+	t.Run("traces every child worker, however many there are", func(t *testing.T) {
 		children := make([]int, 30)
-		for i := 0; i < 30; i++ {
+		for i := range children {
 			children[i] = 1000 + i
 		}
 		target := source.Target{
@@ -74,12 +75,12 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 		}
 		args := BuildStraceArgs(target)
 
-		// 8 base args + 1 parent (-p 500) + 16 children * 2 (-p <pid>) = 8 + 32 = 40
-		// Wait: base args are "-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev" (7 items) + "-p", "500" (2 items) = 9 items
-		// Each child adds 2 items: "-p", "<pid>"
-		// 9 + (16 * 2) = 41
-		if len(args) != 41 {
-			t.Errorf("expected 41 args (capped at 16 children), got %d: %v", len(args), args)
+		expected := []string{"-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev", "-p", "500"}
+		for _, c := range children {
+			expected = append(expected, "-p", strconv.Itoa(c))
+		}
+		if !reflect.DeepEqual(args, expected) {
+			t.Errorf("expected a -p flag for the target and all 30 children (%d args), got %d: %v", len(expected), len(args), args)
 		}
 	})
 }
@@ -237,5 +238,31 @@ func TestReadLoop_ReportsWritesToOtherFDs(t *testing.T) {
 	}
 	if len(*notices) != 1 || !strings.Contains((*notices)[0], "/srv/app/server.log") {
 		t.Errorf("expected a notice naming the log file, got %v", *notices)
+	}
+}
+
+// A worker that exits between discovery and attach makes strace print this line for its PID. strace keeps
+// tracing the others, so Specter has to keep parsing what they write.
+func TestReadLoop_FailedAttachDoesNotStopCapture(t *testing.T) {
+	s := NewSource()
+	input := strings.Join([]string{
+		`strace: attach: ptrace(PTRACE_SEIZE, 4242): No such process`,
+		`[pid 4243] write(1, "\x61\x0a", 2) = 2`,
+		`strace: attach: ptrace(PTRACE_SEIZE, 4244): No such process`,
+		`[pid 4245] write(1, "\x62\x0a", 2) = 2`,
+		``,
+	}, "\n")
+
+	chunks := runReadLoop(t, s, input)
+
+	if len(chunks) != 2 || string(chunks[0].Bytes) != "a\n" || string(chunks[1].Bytes) != "b\n" {
+		t.Fatalf("expected the writes after the failed attach lines, got %+v", chunks)
+	}
+	// The line is kept so a real failure can be explained, but it must not be treated as one while strace runs
+	s.mu.Lock()
+	captured := s.capturedError
+	s.mu.Unlock()
+	if !strings.Contains(captured, "No such process") {
+		t.Errorf("expected the attach error to be remembered, got %q", captured)
 	}
 }
