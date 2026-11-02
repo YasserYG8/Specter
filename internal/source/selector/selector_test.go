@@ -77,6 +77,30 @@ func TestSelector_AutoDetectDefaultStrace(t *testing.T) {
 	}
 }
 
+// A process started by a CI runner sits in the runner service's cgroup but does not log to the journal.
+func TestSelector_CIRunnerServiceUsesStrace(t *testing.T) {
+	procRoot := t.TempDir()
+	pidDir := filepath.Join(procRoot, "4242")
+	if err := os.MkdirAll(pidDir, 0755); err != nil {
+		t.Fatalf("failed to create mock proc dir: %v", err)
+	}
+	cgroup := "0::/system.slice/hosted-compute-agent.service\n"
+	if err := os.WriteFile(filepath.Join(pidDir, "cgroup"), []byte(cgroup), 0644); err != nil {
+		t.Fatalf("failed to write mock cgroup: %v", err)
+	}
+
+	sel := NewSelector("", false)
+	sel.ProcRoot = procRoot
+
+	src, _, err := sel.Select(&source.Target{PID: 4242, Stdout: "pipe:[1]", Stderr: "pipe:[2]"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if src.Name() != "strace" {
+		t.Errorf("expected source 'strace', got %q", src.Name())
+	}
+}
+
 func TestSelector_DirectContainerTarget(t *testing.T) {
 	sel := NewSelector("", false)
 	target := &source.Target{

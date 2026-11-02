@@ -16,6 +16,10 @@ The journal source SHALL determine if a process is managed by systemd by checkin
 - **WHEN** the process runs under a standard user session without systemd service assignment
 - **THEN** the journal source indicates no systemd unit is active
 
+#### Scenario: Process inside a service cgroup that does not log to the journal
+- **WHEN** `/proc/<pid>/cgroup` names an ignored infrastructure unit such as a CI runner, or the process is neither connected to a journal socket nor the unit's main process
+- **THEN** the journal source indicates no systemd unit is active, and source selection continues to the next source
+
 ### Requirement: Live Systemd Journal Streaming
 The journal source SHALL execute `journalctl -f -n 0 _PID=<pid>` or `journalctl -f -n 0 -u <unit>` to stream journal logs.
 

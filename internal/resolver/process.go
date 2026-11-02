@@ -68,22 +68,13 @@ func (pi *ProcessInspector) InspectPID(ctx context.Context, pid int) (*source.Ta
 		target.Stderr = link
 	}
 
-	// 4. Check Docker / systemd cgroup
+	// 4. Check Docker cgroup. Unit stays empty here: a process in a service's cgroup may not log to
+	// the journal, so the source selector decides that with journal.DetectSystemdUnit.
 	cgroupPath := filepath.Join(procDir, "cgroup")
 	if data, err := os.ReadFile(cgroupPath); err == nil {
 		content := string(data)
 		if strings.Contains(content, "docker") || strings.Contains(content, "containerd") {
 			target.Container = "detected"
-		}
-		if strings.Contains(content, ".service") {
-			// Extract service name if possible
-			for _, line := range strings.Split(content, "\n") {
-				if idx := strings.Index(line, ".service"); idx != -1 {
-					parts := strings.Split(line[:idx+8], "/")
-					target.Unit = parts[len(parts)-1]
-					break
-				}
-			}
 		}
 	}
 
