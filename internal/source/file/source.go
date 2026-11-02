@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 // Source implements source.Source by following regular log files attached to fd 1 and/or fd 2.

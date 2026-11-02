@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YasserYG8/Specter/internal/source"
 	"github.com/fatih/color"
-	"github.com/specter-cli/specter/internal/source"
 )
 
 func TestGrouper_JavaExceptionWithCausedBy(t *testing.T) {

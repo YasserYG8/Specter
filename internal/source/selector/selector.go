@@ -5,11 +5,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/specter-cli/specter/internal/source"
-	"github.com/specter-cli/specter/internal/source/docker"
-	"github.com/specter-cli/specter/internal/source/file"
-	"github.com/specter-cli/specter/internal/source/journal"
-	"github.com/specter-cli/specter/internal/source/strace"
+	"github.com/YasserYG8/Specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source/docker"
+	"github.com/YasserYG8/Specter/internal/source/file"
+	"github.com/YasserYG8/Specter/internal/source/journal"
+	"github.com/YasserYG8/Specter/internal/source/strace"
 )
 
 // SupportedSources defines the valid CLI flag options.

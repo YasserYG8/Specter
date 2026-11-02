@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/specter-cli/specter/internal/pipeline"
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/pipeline"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 // stressDeadline limits each stress test. It allows for the race detector, which slows the pipeline several times over.

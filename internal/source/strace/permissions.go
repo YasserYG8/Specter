@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 // CheckStraceInstalled verifies that strace is installed on the system and provides distro-specific install hints.

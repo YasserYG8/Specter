@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 func TestNewSource_Options(t *testing.T) {

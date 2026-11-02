@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 // DefaultIdleTimeout is the silence threshold before flushing partial lines (for interactive prompts).

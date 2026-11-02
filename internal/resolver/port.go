@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 // CommandRunner executes a system command and returns stdout or an error.

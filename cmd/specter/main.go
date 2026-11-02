@@ -15,13 +15,13 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/specter-cli/specter/internal/pipeline"
-	"github.com/specter-cli/specter/internal/resolver"
-	"github.com/specter-cli/specter/internal/source"
-	"github.com/specter-cli/specter/internal/source/selector"
-	"github.com/specter-cli/specter/internal/source/strace"
-	"github.com/specter-cli/specter/internal/ui"
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/pipeline"
+	"github.com/YasserYG8/Specter/internal/resolver"
+	"github.com/YasserYG8/Specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source/selector"
+	"github.com/YasserYG8/Specter/internal/source/strace"
+	"github.com/YasserYG8/Specter/internal/ui"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 var (

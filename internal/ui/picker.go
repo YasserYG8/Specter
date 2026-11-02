@@ -10,7 +10,7 @@ import (
 	"github.com/fatih/color"
 	"golang.org/x/term"
 
-	"github.com/specter-cli/specter/internal/resolver"
+	"github.com/YasserYG8/Specter/internal/resolver"
 )
 
 // ErrPickerAborted indicates the user canceled the interactive picker without selecting a service.

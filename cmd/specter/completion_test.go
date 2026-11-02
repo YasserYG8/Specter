@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specter-cli/specter/internal/resolver"
+	"github.com/YasserYG8/Specter/internal/resolver"
 )
 
 func TestCompletionCmd_Shells(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 func TestPortResolver_LsofSuccess(t *testing.T) {

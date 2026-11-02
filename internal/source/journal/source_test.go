@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 func TestExtractSystemdUnit(t *testing.T) {

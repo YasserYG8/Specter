@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 func TestParseSSListeningPorts(t *testing.T) {

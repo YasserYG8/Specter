@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/YasserYG8/Specter/internal/util"
 	"github.com/fatih/color"
-	"github.com/specter-cli/specter/internal/util"
 )
 
 // ListeningPort represents an active TCP listening socket discovered on the system.

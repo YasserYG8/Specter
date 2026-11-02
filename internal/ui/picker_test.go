@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/specter-cli/specter/internal/resolver"
+	"github.com/YasserYG8/Specter/internal/resolver"
 )
 
 func TestFormatServiceItem(t *testing.T) {

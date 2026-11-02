@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specter-cli/specter/internal/source"
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 // ProcessInspector inspects /proc/<PID> to extract process metadata.

@@ -66,5 +66,5 @@ arg or picker -> resolver -> source.Target -> selector -> Source
 
 ## Known doc drift
 
-- **Go version:** `go.mod` requires Go 1.26, while the README, `openspec/config.yaml`, and `PRODUCT.md` say 1.24+.
+- **Go version:** `go.mod` requires Go 1.26, while `openspec/config.yaml` and `PRODUCT.md` say 1.24+.
 - **Flag shorthands:** the README lists `-l`, `-g`, `-t`, and `-s`, but `main.go` defines long flags only.

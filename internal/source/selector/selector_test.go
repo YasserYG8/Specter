@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 func TestSelector_ForceSource(t *testing.T) {

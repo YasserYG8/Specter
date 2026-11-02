@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 // Regex patterns for matching strace output

@@ -3,7 +3,7 @@ package resolver
 import (
 	"context"
 
-	"github.com/specter-cli/specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/source"
 )
 
 // Resolver discovers target process information from a port or PID.

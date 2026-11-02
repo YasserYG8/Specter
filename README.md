@@ -23,6 +23,35 @@ When running backend microservices, dev servers, or background containers across
 
 ---
 
+## Install
+
+Specter runs on Linux, and on Windows through WSL2.
+
+**Download a binary:**
+
+```bash
+curl -fsSL https://github.com/YasserYG8/Specter/releases/latest/download/specter_linux_amd64.tar.gz | tar -xz specter
+sudo install specter /usr/local/bin/
+```
+
+On ARM, use `specter_linux_arm64.tar.gz`. The [releases page](https://github.com/YasserYG8/Specter/releases) also has `.deb` and `.rpm` packages.
+
+**Or install with Go (1.26 or higher):**
+
+```bash
+go install github.com/YasserYG8/Specter/cmd/specter@latest
+```
+
+**Then set up the tools Specter uses:**
+
+```bash
+sudo apt install strace lsof iproute2
+```
+
+Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process fails with `Operation not permitted` until you allow it. Either run `sudo specter 3000`, or see [Kernel Permissions](#kernel-permissions-ptrace_scope) for the other options.
+
+---
+
 ## Key Features
 
 - **Interactive Discovery Picker**: Run `specter` with zero arguments to browse all active dev servers, listening ports, Docker containers, and project directories in a comfortable, keyboard-driven UI (`↑`/`↓` or `k`/`j`, `Enter` to select).
@@ -184,7 +213,7 @@ Specter is engineered as a Linux-first systems tool leveraging Linux kernel inte
 ### Dependencies
 
 - **Runtime**: `lsof` (or `iproute2`/`ss`), `strace` (for PTY/terminal snooping), and optional `docker` CLI.
-- **Build**: Go 1.24 or higher.
+- **Build**: Go 1.26 or higher.
 
 ### Kernel Permissions (`ptrace_scope`)
 

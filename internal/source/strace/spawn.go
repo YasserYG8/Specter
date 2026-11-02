@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/specter-cli/specter/internal/source"
-	"github.com/specter-cli/specter/internal/util"
+	"github.com/YasserYG8/Specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/util"
 )
 
 // Options configures the strace source behavior.
