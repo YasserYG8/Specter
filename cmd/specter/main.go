@@ -89,7 +89,7 @@ Zero configuration, zero wrappers, read-only.`,
   # Stream only stderr (e.g. unhandled exceptions and crashes)
   specter 3000 --stderr
 
-  # Trace multi-process architectures (e.g. Node cluster, Gunicorn, Celery)
+  # Direct workers (Node cluster, Gunicorn, Celery) are always traced; --tree adds deeper descendants
   specter 8000 --tree
 
   # Force a specific log source capture engine
@@ -492,13 +492,13 @@ Zero configuration, zero wrappers, read-only.`,
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&flagLevel, "level", "", "minimum log level (debug, info, warn, error)")
-	flags.StringVar(&flagGrep, "grep", "", "filter output matching text or regex pattern")
+	flags.StringVarP(&flagLevel, "level", "l", "", "minimum log level (debug, info, warn, error)")
+	flags.StringVarP(&flagGrep, "grep", "g", "", "filter output matching text or regex pattern")
 	flags.BoolVar(&flagStderr, "stderr", false, "stream only standard error (fd 2)")
 	flags.BoolVar(&flagJSON, "json", false, "force raw JSON lines without pretty-printing")
 	flags.BoolVar(&flagRaw, "raw", false, "bypass parsing and ANSI color formatting")
-	flags.StringVar(&flagSource, "source", "", "force source selection (docker, file, journal, strace)")
-	flags.BoolVar(&flagTree, "tree", false, "follow and attach to child processes")
+	flags.StringVarP(&flagSource, "source", "s", "", "force source selection (docker, file, journal, strace)")
+	flags.BoolVarP(&flagTree, "tree", "t", false, "also trace deeper descendants of the target; direct child workers are always traced")
 	flags.BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
 
 	versionCmd := &cobra.Command{

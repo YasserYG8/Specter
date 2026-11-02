@@ -12,7 +12,7 @@ You can also help by:
 
 - Testing Specter with your own stack and reporting what breaks.
 - Adding log samples to `test/fixtures/` for frameworks whose logs or stack traces don't group correctly.
-- Fixing the places where the docs and the code disagree. For example, the README lists short flags such as `-l`, but the CLI only defines long flags.
+- Fixing the places where the docs and the code disagree.
 
 For anything large, open an issue first so we can agree on the approach before you write the code.
 

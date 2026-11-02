@@ -17,3 +17,4 @@
 ### Added
 
 - Notices on stderr when the target writes to its own log file, when nothing has been captured after 10 seconds, and when `--grep` is not a valid regular expression and is matched as literal text.
+- Short flags `-l` (`--level`), `-g` (`--grep`), `-t` (`--tree`) and `-s` (`--source`). The README already listed them, but they were rejected with `unknown shorthand flag`.

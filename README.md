@@ -19,7 +19,7 @@ specter 18492
 
 When running backend microservices, dev servers, or background containers across multiple terminal sessions, locating logs often requires hunting down hidden terminal tabs, querying container IDs, or restarting processes with verbose log wrappers.
 
-**Specter eliminates this workflow friction.** Given a port, PID, container, or project name—or simply running `specter` to open the interactive picker—Specter resolves the target, identifies where its standard streams are directed, attaches non-invasively, and streams the output in real time with line reassembly, JSON formatting, and log-level coloring.
+**Specter eliminates this workflow friction.** Given a port, PID, container, or project name—or simply running `specter` to open the interactive picker—Specter resolves the target, identifies where its standard streams are directed, attaches read-only (see [Performance While Attached](#performance-while-attached)), and streams the output in real time with line reassembly, JSON formatting, and log-level coloring.
 
 ---
 
@@ -41,6 +41,8 @@ Then set up the tools Specter uses:
 sudo apt install strace lsof iproute2
 ```
 
+While the `strace` source is attached, Specter slows the target, so read [Performance While Attached](#performance-while-attached) before pointing it at a busy server.
+
 Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process fails with `Operation not permitted` until you allow it. Either run `sudo "$(which specter)" 3000`, or see [Kernel Permissions](#kernel-permissions-ptrace_scope) for the other options.
 
 ---
@@ -50,7 +52,7 @@ Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process 
 - **Interactive Discovery Picker**: Run `specter` with zero arguments to browse all active dev servers, listening ports, Docker containers, and project directories in a comfortable, keyboard-driven UI (`↑`/`↓` or `k`/`j`, `Enter` to select).
 - **Project-Aware Resolution**: Automatically infers project names from your working directory, git repositories, or container labels (like the `ports` CLI). Attach instantly via `specter <project-name>`.
 - **Flexible Target Resolution**: Attach by listening port (`specter 3000`), process ID (`specter 14280`), Docker container name or ID (`specter web_app`), or project name (`specter example`).
-- **Multi-Process / Worker Tree Tracing (`--tree`)**: Automatically discovers and traces child worker processes (e.g. Node.js `cluster`, Gunicorn, Celery, Puma, Unicorn).
+- **Multi-Process / Worker Tracing**: Child worker processes (e.g. Node.js `cluster`, Gunicorn, Celery, Puma, Unicorn) that already exist when you attach are always traced, and workers started later are followed. `--tree` also traces deeper descendants, up to 3 levels down.
 - **Smart Log Pipeline**: Reassembles split lines and multi-threaded streams, pretty-prints single-line JSON logs, highlights HTTP status codes, and groups multi-line stack traces (Node.js, Python, Go, Java).
 - **Zero Configuration & Strictly Read-Only**: Works against already-running processes without code modifications, SDKs, or restarts. Never injects code or opens inbound network ports.
 - **Shell Autocompletion**: Context-aware autocompletion for Bash, Zsh, Fish, and PowerShell that dynamically suggests active ports, container names, and projects.
@@ -85,17 +87,17 @@ specter [port | pid | container | project] (or interactive picker)
 [Target Resolver]
        ├── Port Resolver       ─── Queries lsof / ss / procfs for listening TCP sockets
        ├── Project Resolver    ─── Inspects working directories, git root, package metadata
-       ├── Docker Resolver     ─── Inspects docker engine API / CLI for mapped ports & containers
+       ├── Docker Resolver     ─── Asks the `docker` CLI for mapped ports & containers
        └── Process Resolver    ─── Reads /proc/<pid>/cmdline, cwd, fd targets
        │
        ▼
-[Worker Tree Discovery] ─── Discovers worker child PIDs if --tree is enabled
+[Worker Discovery]      ─── Finds child worker PIDs; --tree also finds deeper descendants
        │
        ▼
 [Source Selector]
-       ├── Docker Engine       ─── Streams docker logs -f --tail 0
-       ├── Regular File        ─── Follows file descriptor target
+       ├── Docker              ─── Streams docker logs -f --tail 0
        ├── Systemd Journal     ─── Reads journalctl -f _PID=<pid>
+       ├── Regular File        ─── Follows file descriptor target
        └── PTY / Syscall Trace ─── Attaches via optimized strace (trace=write,writev on fds 1 & 2)
        │
        ▼
@@ -110,10 +112,10 @@ specter [port | pid | container | project] (or interactive picker)
 
 1. **Resolution**: Inspects network state using `lsof` or `ss` to identify the listening PID and checks the local Docker daemon for containerized port mappings. Inspects `/proc/<pid>/cmdline`, `/proc/<pid>/cwd`, and maps `/proc/<pid>/fd/1` and `/proc/<pid>/fd/2`.
 2. **Source Selection**: Chooses the optimal acquisition mechanism:
-   - **Docker Container**: Streams directly via Docker API / `docker logs`.
-   - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
+   - **Docker Container** (checked first): Streams through the `docker` CLI (`docker logs`).
    - **Systemd Service**: Streams via `journalctl` if governed by systemd.
-   - **Terminal / PTY**: Uses non-invasive `strace` snooping on `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes.
+   - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
+   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes.
 3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
 4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 
@@ -149,7 +151,7 @@ specter 18492
 | `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. |
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. Preserves grouped stack traces. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |
-| `--tree` | `-t` | Automatically discover and attach to child processes / worker threads. |
+| `--tree` | `-t` | Also trace deeper descendants of the target (up to 3 levels). Direct child workers are always traced. |
 | `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |
 | `--json` | | Output formatted single-line JSON records. |
 | `--raw` | | Bypass line parsing and ANSI color formatting (pure raw stream). |
@@ -161,8 +163,8 @@ specter 18492
 # Stream warnings and errors only from port 3000
 specter 3000 --level warn
 
-# Filter for authentication errors across worker processes
-specter 8000 --tree --grep "auth|unauthorized|invalid token"
+# Filter for authentication errors across worker processes (direct workers need no flag)
+specter 8000 --grep "auth|unauthorized|invalid token"
 
 # Isolate unhandled exceptions and crashes on stderr
 specter 3000 --stderr
@@ -190,6 +192,16 @@ The marker is also shown with `--raw`. A line over 64 KB that was built from sev
 
 ---
 
+## Performance While Attached
+
+When Specter uses the `strace` source, it slows the target. `strace` stops the process at every system call, including the ones it does not print, so the cost depends on how often the server makes calls and writes.
+
+On two test servers, throughput fell by about 60% to 90% while Specter was attached: from about 2,100 to 800 requests per second on one, and from about 14,000 to 1,500 on the other. Your server's result will differ, so try Specter on a staging copy before attaching to anything important.
+
+The slowdown ends when Specter detaches (Ctrl+C). The `docker`, `file` and `journal` sources read output that already exists and do not slow the target. The `Source:` line Specter prints when it attaches tells you which one is in use.
+
+---
+
 ## Shell Autocompletion
 
 Specter provides dynamic autocompletion for active ports, container names, and project directories.
@@ -214,7 +226,7 @@ specter completion powershell | Out-String | Invoke-Expression
 
 ## System Requirements & Platform Support
 
-Specter is engineered as a Linux-first systems tool leveraging Linux kernel interfaces (`/proc`, `ptrace(2)`, `lsof`, `ss`, and Docker socket).
+Specter is engineered as a Linux-first systems tool leveraging Linux kernel interfaces (`/proc`, `ptrace(2)`, `lsof`, `ss`, and the `docker` CLI).
 
 - **Linux**: Native support on all standard distributions (Ubuntu, Debian, Fedora, Arch, Alpine).
 - **Windows**: Fully supported via **WSL2** (Windows Subsystem for Linux).
@@ -234,7 +246,7 @@ On Linux systems enforcing restricted ptrace access (`/proc/sys/kernel/yama/ptra
 cat /proc/sys/kernel/yama/ptrace_scope
 
 # Option A: Run Specter with sudo
-sudo specter 3000
+sudo "$(which specter)" 3000
 
 # Option B: Grant strace the ptrace capability permanently
 sudo setcap cap_sys_ptrace+ep $(which strace)
