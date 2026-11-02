@@ -21,6 +21,9 @@ var (
 	// ErrToolMissing indicates a required system utility (strace, lsof, ss) is not installed.
 	ErrToolMissing = errors.New("required system utility not found")
 
+	// ErrInvalidFlag indicates a flag was given a value Specter cannot use.
+	ErrInvalidFlag = errors.New("invalid flag value")
+
 	// ErrUnsupportedPlatform indicates the current OS is not supported natively.
 	ErrUnsupportedPlatform = errors.New("unsupported platform: Specter requires Linux or WSL2")
 )

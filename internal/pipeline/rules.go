@@ -74,6 +74,21 @@ func CapLineLength(s string, maxLen int, marker string) string {
 	return s[:cut] + marker
 }
 
+// captureMarkerRegex matches the marker a source appends when it captured less than a write contained.
+var captureMarkerRegex = regexp.MustCompile(`\[specter: \d+ more bytes not captured\]$`)
+
+// capCapturedLine applies MaxLineLength to a line. A capture marker at the end of the line is kept, because it
+// says exactly how much is missing and a cut write fills the whole limit, which would otherwise always remove it.
+func capCapturedLine(s string) string {
+	if len(s) <= MaxLineLength {
+		return s
+	}
+	if loc := captureMarkerRegex.FindStringIndex(s); loc != nil {
+		return CapLineLength(s[:loc[0]], MaxLineLength, TruncationMarker) + s[loc[0]:]
+	}
+	return CapLineLength(s, MaxLineLength, TruncationMarker)
+}
+
 // ParseRankedSeverity parses a string representation of severity.
 func ParseRankedSeverity(raw string) Severity {
 	switch strings.ToLower(strings.TrimSpace(raw)) {

@@ -96,7 +96,7 @@ specter [port | pid | container | project] (or interactive picker)
        ├── Docker Engine       ─── Streams docker logs -f --tail 0
        ├── Regular File        ─── Follows file descriptor target
        ├── Systemd Journal     ─── Reads journalctl -f _PID=<pid>
-       └── PTY / Syscall Trace ─── Attaches via optimized strace (trace=write on fds 1 & 2)
+       └── PTY / Syscall Trace ─── Attaches via optimized strace (trace=write,writev on fds 1 & 2)
        │
        ▼
 [Line Assembler]        ─── Thread/FD buffer assembly, flush timer, streaming UTF-8 decoding
@@ -113,7 +113,7 @@ specter [port | pid | container | project] (or interactive picker)
    - **Docker Container**: Streams directly via Docker API / `docker logs`.
    - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
    - **Systemd Service**: Streams via `journalctl` if governed by systemd.
-   - **Terminal / PTY**: Uses non-invasive `strace` snooping on `write()` syscalls for descriptors 1 and 2.
+   - **Terminal / PTY**: Uses non-invasive `strace` snooping on `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes.
 3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
 4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 
@@ -146,7 +146,7 @@ specter 18492
 
 | Flag | Shorthand | Description |
 | :--- | :--- | :--- |
-| `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). |
+| `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. |
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. Preserves grouped stack traces. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |
 | `--tree` | `-t` | Automatically discover and attach to child processes / worker threads. |
@@ -170,6 +170,23 @@ specter 3000 --stderr
 # Trace a Docker container with raw JSON output
 specter api-container --json
 ```
+
+
+### Notices and truncation
+
+Specter prints its own status messages to stderr, so `specter 3000 | grep 500` is never polluted by them. You may see:
+
+- `[specter:notice] Target writes to its own log file <path>, which Specter does not follow.` The process logs to a file instead of stdout/stderr. Specter names the file once, so you can `tail -f` it.
+- `[specter:notice] Nothing captured yet.` Nothing was captured in the first 10 seconds. The target may be idle, buffering its output, or logging somewhere else. Output hidden by `--level` or `--grep` does not trigger this.
+- `[specter:notice] --grep "..." is not a valid regular expression` The pattern is matched as literal text instead.
+
+A single write larger than 64 KB cannot be captured whole. Specter keeps the first 64 KB and marks the cut in the stream itself, on stdout, so you can see which line is damaged:
+
+```
+AAAA...AAAA[specter: 34465 more bytes not captured]
+```
+
+The marker is also shown with `--raw`. A line over 64 KB that was built from several smaller writes is cut when rendered and ends with `... [specter: truncated at 64KB]`.
 
 ---
 

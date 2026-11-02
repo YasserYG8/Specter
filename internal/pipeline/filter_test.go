@@ -71,3 +71,29 @@ func TestFilter_OnlyStderr(t *testing.T) {
 		t.Errorf("expected stderrEntry to match")
 	}
 }
+
+func TestFilter_GrepError(t *testing.T) {
+	t.Run("invalid regex falls back to literal and reports", func(t *testing.T) {
+		f := NewFilter(FilterOptions{Grep: "[error"})
+		if f.GrepError() == nil {
+			t.Fatal("expected a compile error for an invalid regex")
+		}
+		hit := &Entry{FD: 1, Lines: []string{"a [error happened"}}
+		miss := &Entry{FD: 1, Lines: []string{"an error happened"}}
+		if !f.Matches(hit) {
+			t.Error("expected literal match of '[error'")
+		}
+		if f.Matches(miss) {
+			t.Error("did not expect a match without the literal text")
+		}
+	})
+
+	t.Run("valid regex and empty pattern report nothing", func(t *testing.T) {
+		if err := NewFilter(FilterOptions{Grep: "auth|token"}).GrepError(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if err := NewFilter(FilterOptions{}).GrepError(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}

@@ -12,6 +12,7 @@ type FilterOptions struct {
 	Grep       string
 	OnlyStderr bool
 	grepRegex  *regexp.Regexp
+	grepErr    error
 }
 
 // Filter evaluates log entries against configured criteria.
@@ -35,9 +36,17 @@ func NewFilter(opts FilterOptions) *Filter {
 		}
 		if re, err := regexp.Compile("(?i)" + pattern); err == nil {
 			f.opts.grepRegex = re
+		} else {
+			f.opts.grepErr = err
 		}
 	}
 	return f
+}
+
+// GrepError returns the error from compiling the grep pattern, or nil. When it is not nil the pattern is
+// matched as literal text, so callers should tell the user.
+func (f *Filter) GrepError() error {
+	return f.opts.grepErr
 }
 
 // matchText tests a single string against the configured grep pattern.

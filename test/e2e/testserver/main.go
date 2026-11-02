@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"net"
@@ -15,10 +16,16 @@ func main() {
 	portFlag := flag.Int("port", 0, "Port to listen on (0 for dynamic ephemeral port)")
 	roleFlag := flag.String("role", "parent", "Role: parent or child")
 	spawnChildFlag := flag.Bool("spawn-child", false, "Spawn child worker at startup")
+	workerIDFlag := flag.Int("id", 0, "Worker id for the numbered-writer role")
+	workerLinesFlag := flag.Int("lines", 0, "Lines to write for the numbered-writer role")
 	flag.Parse()
 
 	if *roleFlag == "child" || *roleFlag == "child-worker" {
 		runChildWorker()
+		return
+	}
+	if *roleFlag == "numbered-writer" {
+		runNumberedWriter(*workerIDFlag, *workerLinesFlag)
 		return
 	}
 
@@ -122,6 +129,61 @@ func main() {
 		fmt.Fprintf(w, "Child worker forked with PID %d\n", cmd.Process.Pid)
 	})
 
+	// 5b. Several worker processes that each write numbered lines (w<id>-<seq>) to stdout, one write per line
+	mux.HandleFunc("/workers", func(w http.ResponseWriter, r *http.Request) {
+		count, _ := strconv.Atoi(r.URL.Query().Get("count"))
+		lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
+		if count <= 0 {
+			count = 4
+		}
+		if lines <= 0 {
+			lines = 3000
+		}
+		var cmds []*exec.Cmd
+		for i := 0; i < count; i++ {
+			cmd := exec.Command(os.Args[0], "-role=numbered-writer", fmt.Sprintf("-id=%d", i), fmt.Sprintf("-lines=%d", lines))
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Start(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cmds = append(cmds, cmd)
+		}
+		for _, cmd := range cmds {
+			_ = cmd.Wait()
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "%d workers wrote %d lines each\n", count, lines)
+	})
+
+	// 5c. One line of N bytes, written with a single write, followed by a short line
+	mux.HandleFunc("/longline", func(w http.ResponseWriter, r *http.Request) {
+		size, _ := strconv.Atoi(r.URL.Query().Get("bytes"))
+		if size <= 0 {
+			size = 20000
+		}
+		line := bytes.Repeat([]byte("A"), size)
+		line = append(line, '\n')
+		_, _ = os.Stdout.Write(line)
+		_, _ = os.Stdout.WriteString("after-long-line\n")
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Wrote a line of %d bytes\n", size)
+	})
+
+	// 5d. A log line written with writev(2) instead of write(2)
+	mux.HandleFunc("/writev", func(w http.ResponseWriter, r *http.Request) {
+		msg := r.URL.Query().Get("msg")
+		if msg == "" {
+			msg = "writev-default"
+		}
+		_ = writevStdout([]byte("writev-line: "), []byte(msg), []byte("\n"))
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "writev emitted")
+	})
+
 	// 6. Graceful target termination endpoint
 	mux.HandleFunc("/exit", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -142,5 +204,13 @@ func runChildWorker() {
 		fmt.Fprintf(os.Stdout, `{"level":"info","msg":"child worker active","worker_pid":%d,"step":%d}`+"\n", os.Getpid(), i)
 		os.Stdout.Sync()
 		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// runNumberedWriter writes lines "w<id>-<seq>" to stdout, one write(2) per line, so a test can compare the
+// lines written with the lines captured.
+func runNumberedWriter(id, lines int) {
+	for i := 0; i < lines; i++ {
+		_, _ = os.Stdout.WriteString(fmt.Sprintf("w%d-%d\n", id, i))
 	}
 }

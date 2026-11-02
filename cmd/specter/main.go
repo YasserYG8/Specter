@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -181,6 +183,11 @@ Zero configuration, zero wrappers, read-only.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if flagNoColor {
 				color.NoColor = true
+			}
+
+			// Reject a --level that would be silently ignored, before anything is resolved or attached
+			if err := validateLevel(flagLevel); err != nil {
+				return err
 			}
 
 			// Verify Linux platform
@@ -398,6 +405,7 @@ Zero configuration, zero wrappers, read-only.`,
 			}
 			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
 
+			wireNotices(src)
 			chunks, errs := src.Start(ctx, *target)
 
 			// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
@@ -408,6 +416,7 @@ Zero configuration, zero wrappers, read-only.`,
 						fmt.Fprintf(os.Stderr, "%s Auto-detected source '%s' unavailable (%v); falling back to strace\n",
 							headerTag, src.Name(), err)
 						src = strace.NewSource(strace.Options{FollowTree: flagTree})
+						wireNotices(src)
 						chunks, errs = src.Start(ctx, *target)
 					}
 				default:
@@ -431,6 +440,10 @@ Zero configuration, zero wrappers, read-only.`,
 				OnlyStderr: flagStderr,
 			})
 
+			if err := filter.GrepError(); err != nil {
+				printNotice(os.Stderr, fmt.Sprintf("--grep %q is not a valid regular expression (%v); matching it as literal text.", flagGrep, err))
+			}
+
 			// 4. Renderer configuration
 			renderer := pipeline.NewRenderer(pipeline.RendererOptions{
 				NoColor:   flagNoColor,
@@ -439,7 +452,10 @@ Zero configuration, zero wrappers, read-only.`,
 			})
 
 			// 5. Stream styled entries to terminal
+			sawEntry, stopNoOutputNotice := startNoOutputNotice(ctx, noOutputNoticeDelay, os.Stderr)
+			defer stopNoOutputNotice()
 			for entry := range entries {
+				sawEntry() // counted before filters: output hidden by --grep or --level is not silence
 				if !filter.Matches(&entry) {
 					continue
 				}
@@ -522,5 +538,45 @@ func main() {
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+// noOutputNoticeDelay is how long Specter waits for the first entry before saying nothing was captured.
+var noOutputNoticeDelay = 10 * time.Second
+
+// printNotice writes a status message to w, which is stderr while attached so piped log output stays clean.
+func printNotice(w io.Writer, msg string) {
+	fmt.Fprintf(w, "%s %s\n", color.YellowString("[specter:notice]"), msg)
+}
+
+// wireNotices lets sources that can explain missing output print their notices to stderr.
+func wireNotices(src source.Source) {
+	if n, ok := src.(interface{ SetNotifier(func(string)) }); ok {
+		n.SetNotifier(func(msg string) { printNotice(os.Stderr, msg) })
+	}
+}
+
+// startNoOutputNotice prints one notice to w if sawEntry has not been called after delay. The returned stop
+// function cancels a notice that has not fired yet.
+func startNoOutputNotice(ctx context.Context, delay time.Duration, w io.Writer) (sawEntry func(), stop func()) {
+	var seen atomic.Bool
+	timer := time.AfterFunc(delay, func() {
+		if !seen.Load() && ctx.Err() == nil {
+			printNotice(w, "Nothing captured yet. The target may be idle, buffering its output, or logging somewhere else.")
+		}
+	})
+	return func() { seen.Store(true) }, func() { timer.Stop() }
+}
+
+// validateLevel rejects --level values that ParseRankedSeverity would silently treat as "no filter".
+func validateLevel(raw string) error {
+	if strings.TrimSpace(raw) == "" || pipeline.ParseRankedSeverity(raw) != pipeline.SeverityNone {
+		return nil
+	}
+	return &util.DiagnosticError{
+		Err:         util.ErrInvalidFlag,
+		Title:       fmt.Sprintf("Unknown --level %q", raw),
+		Explanation: "Specter would show every line instead of filtering, so it refuses the value.",
+		Remediation: "Use one of: debug, info, warn, error (aliases such as warning, err, fatal and trace also work)",
 	}
 }

@@ -234,7 +234,7 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 
 				// Enforce bounded length safety and sanitize non-SGR sequences
 				rawText := line.Text
-				safeText := SanitizeTerminalOutput(CapLineLength(rawText, MaxLineLength, TruncationMarker))
+				safeText := SanitizeTerminalOutput(capCapturedLine(rawText))
 				cleanText := StripANSI(safeText)
 
 				if line.IsPartial {

@@ -318,3 +318,57 @@ func TestRenderer_HTTPStatusStyling(t *testing.T) {
 		t.Errorf("expected ANSI color codes in 500 ERROR HTTP access log rendering")
 	}
 }
+
+// A write over the capture limit reaches the pipeline as exactly MaxLineLength bytes plus the source's marker.
+// The user has to see that marker, with its byte count, in place of the generic truncation message.
+func TestPipeline_CaptureMarkerSurvivesLineCap(t *testing.T) {
+	const marker = "[specter: 34465 more bytes not captured]"
+
+	for _, raw := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		chunks := make(chan source.Chunk, 2)
+		now := time.Now()
+		chunks <- source.Chunk{Bytes: []byte(strings.Repeat("A", MaxLineLength) + marker + "\n"), FD: 1, PID: 1, TS: now}
+		chunks <- source.Chunk{Bytes: []byte("after\n"), FD: 1, PID: 1, TS: now}
+		close(chunks)
+
+		lines := NewLineAssembler(DefaultIdleTimeout).Assemble(ctx, chunks)
+		entries := NewStackTraceGrouper(DefaultTraceIdleTimeout).Group(ctx, lines)
+		renderer := NewRenderer(RendererOptions{NoColor: true, Raw: raw})
+
+		var rendered []string
+		for entry := range entries {
+			rendered = append(rendered, renderer.Render(&entry))
+		}
+
+		if len(rendered) != 2 {
+			t.Fatalf("raw=%v: expected 2 lines, got %d", raw, len(rendered))
+		}
+		if want := strings.Repeat("A", MaxLineLength) + marker; rendered[0] != want {
+			tail := rendered[0][max(0, len(rendered[0])-60):]
+			t.Errorf("raw=%v: expected all captured bytes then the marker, got %d bytes ending %q", raw, len(rendered[0]), tail)
+		}
+		if rendered[1] != "after" {
+			t.Errorf("raw=%v: expected the next line to stay separate, got %q", raw, rendered[1])
+		}
+	}
+}
+
+func TestCapCapturedLine(t *testing.T) {
+	const marker = "[specter: 9 more bytes not captured]"
+	long := strings.Repeat("B", MaxLineLength+10)
+
+	if got := capCapturedLine("short" + marker); got != "short"+marker {
+		t.Errorf("a short line must not change, got %q", got)
+	}
+	if got := capCapturedLine(long); !strings.HasSuffix(got, TruncationMarker) || len(got) != MaxLineLength+len(TruncationMarker) {
+		t.Errorf("a long line without a marker gets the generic cap, got %d bytes", len(got))
+	}
+	// Earlier buffered bytes can push the text before the marker over the limit: both cuts stay visible
+	want := strings.Repeat("B", MaxLineLength) + TruncationMarker + marker
+	if got := capCapturedLine(long + marker); got != want {
+		t.Errorf("expected the capped text then the marker, got %d bytes ending %q", len(got), got[len(got)-60:])
+	}
+}

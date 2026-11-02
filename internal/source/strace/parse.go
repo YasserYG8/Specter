@@ -11,33 +11,40 @@ import (
 	"github.com/YasserYG8/Specter/internal/source"
 )
 
-// Regex patterns for matching strace output
+// Regex patterns for matching strace output. The formats were verified against strace 6.8.
 var (
 	// [pid 1234] or [pid  1234] prefix
 	pidPrefixRegex = regexp.MustCompile(`^\[pid\s+(\d+)\]\s+`)
 
-	// Complete write: write(1, "\x68\x65...", 5) = 5 or write(1, "\x68\x65"..., 5) = 5
-	writeCompleteRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)"(?:\s*\.\.\.)?\s*,\s*(\d+)\)\s*=\s*(-?\d+)`)
+	// Start of a write or writev call: write(1,  or writev(2,
+	callStartRegex = regexp.MustCompile(`^(writev?)\((\d+),\s*`)
 
-	// Unfinished write: write(1, "\x68\x65..." <unfinished ...> or write(1, "\x68\x65"... <unfinished ...>
-	writeUnfinishedRegex = regexp.MustCompile(`^write\((\d+),\s*"([^"]*)"(?:\s*\.\.\.)?\s*<unfinished \.\.\.>`)
+	// Arguments of write after the fd. Complete: "\x68\x65", 2) = 2. Cut by -s: "\x68\x65"..., 100) = 100.
+	// Overlapping with another call: "\x68\x65", 2 <unfinished ...> (the return value is empty).
+	writeArgsRegex = regexp.MustCompile(`^"([^"]*)"(?:\s*\.\.\.)?\s*,\s*(\d+)(?:\)\s*=\s*(-?\d+)|\s*<unfinished \.\.\.>)`)
 
-	// Resumed write with content: <... write resumed> "\x6c\x6f"..., 5) = 5
-	writeResumedWithContentRegex = regexp.MustCompile(`^<\.\.\.\s*write resumed>\s*"([^"]*)"(?:\s*\.\.\.)?\s*,\s*(\d+)\)\s*=\s*(-?\d+)`)
+	// Arguments of writev after the fd. [{iov_base="\x68", iov_len=1}, ...], 2) = 3 or ..., 2 <unfinished ...>
+	writevArgsRegex = regexp.MustCompile(`^\[(.*?)\](?:\s*\.\.\.)?\s*,\s*(\d+)(?:\)\s*=\s*(-?\d+)|\s*<unfinished \.\.\.>)`)
 
-	// Resumed write without additional content: <... write resumed> ) = 5
-	writeResumedRegex = regexp.MustCompile(`^<\.\.\.\s*write resumed>\s*\)\s*=\s*(-?\d+)`)
+	// One element of a writev vector. The ellipsis after the quote means strace cut the element.
+	iovBaseRegex = regexp.MustCompile(`iov_base="([^"]*)"(\.\.\.)?`)
+
+	// <... write resumed>)        = 5. strace pads the gap before "=" and does not repeat the payload.
+	resumedRegex = regexp.MustCompile(`^<\.\.\.\s*(writev?) resumed>\s*\)\s*=\s*(-?\d+)`)
 )
 
 type pendingCall struct {
-	fd       int
-	hexParts []string
+	fd   int
+	data []byte
 }
 
-// Parser parses strace write() output into source.Chunk instances.
+// Parser parses strace write() and writev() output into source.Chunk instances.
 type Parser struct {
 	defaultPID int
 	pending    map[int]*pendingCall
+
+	// OnOtherFD, when set, is called for every write or writev to a descriptor other than 1 and 2.
+	OnOtherFD func(pid, fd int)
 }
 
 // NewParser creates an strace parser.
@@ -64,113 +71,104 @@ func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
 		line = line[len(m[0]):]
 	}
 
-	// 1. Check for resumed calls
-	if m := writeResumedWithContentRegex.FindStringSubmatch(line); len(m) > 0 {
+	// 1. A call that was split because another tracee was in a syscall: this line has the return value only
+	if m := resumedRegex.FindStringSubmatch(line); m != nil {
 		pending, exists := p.pending[pid]
 		if !exists {
 			return nil, nil
 		}
 		delete(p.pending, pid)
 
-		hexStr := m[1]
-		ret, _ := strconv.Atoi(m[3])
-		if ret <= 0 {
-			return nil, nil
-		}
-
-		pending.hexParts = append(pending.hexParts, hexStr)
-		allHex := strings.Join(pending.hexParts, "")
-		decoded, err := DecodeStraceHex(allHex)
-		if err != nil {
-			return nil, err
-		}
-		if len(decoded) > ret {
-			decoded = decoded[:ret]
-		}
-
-		return &source.Chunk{
-			Bytes: decoded,
-			FD:    pending.fd,
-			PID:   pid,
-			TS:    now,
-		}, nil
+		ret, _ := strconv.Atoi(m[2])
+		return buildChunk(pending.data, ret, pending.fd, pid, now), nil
 	}
 
-	if m := writeResumedRegex.FindStringSubmatch(line); len(m) > 0 {
-		pending, exists := p.pending[pid]
-		if !exists {
-			return nil, nil
-		}
+	// 2. The start of a write or writev: complete, or split with <unfinished ...>
+	start := callStartRegex.FindStringSubmatch(line)
+	if start == nil {
+		return nil, nil
+	}
+	isVector := start[1] == "writev"
+	fd, _ := strconv.Atoi(start[2])
+	rest := line[len(start[0]):]
+
+	if fd != 1 && fd != 2 {
+		// A new call from this tracee means any earlier unfinished call has already been resumed
 		delete(p.pending, pid)
-
-		ret, _ := strconv.Atoi(m[1])
-		if ret <= 0 {
-			return nil, nil
-		}
-
-		allHex := strings.Join(pending.hexParts, "")
-		decoded, err := DecodeStraceHex(allHex)
-		if err != nil {
-			return nil, err
-		}
-		if len(decoded) > ret {
-			decoded = decoded[:ret]
-		}
-
-		return &source.Chunk{
-			Bytes: decoded,
-			FD:    pending.fd,
-			PID:   pid,
-			TS:    now,
-		}, nil
-	}
-
-	// 2. Check for unfinished calls
-	if m := writeUnfinishedRegex.FindStringSubmatch(line); len(m) > 0 {
-		fd, _ := strconv.Atoi(m[1])
-		if fd != 1 && fd != 2 {
-			return nil, nil
-		}
-		hexStr := m[2]
-		p.pending[pid] = &pendingCall{
-			fd:       fd,
-			hexParts: []string{hexStr},
+		if p.OnOtherFD != nil {
+			p.OnOtherFD(pid, fd)
 		}
 		return nil, nil
 	}
 
-	// 3. Check for standard complete write calls
-	if m := writeCompleteRegex.FindStringSubmatch(line); len(m) > 0 {
-		fd, _ := strconv.Atoi(m[1])
-		if fd != 1 && fd != 2 {
+	var hexParts []string
+	var ret string
+	if isVector {
+		m := writevArgsRegex.FindStringSubmatch(rest)
+		if m == nil {
 			return nil, nil
 		}
-
-		ret, _ := strconv.Atoi(m[4])
-		if ret <= 0 {
+		hexParts = vectorHexParts(m[1])
+		ret = m[3]
+	} else {
+		m := writeArgsRegex.FindStringSubmatch(rest)
+		if m == nil {
 			return nil, nil
 		}
-
-		hexStr := m[2]
-		decoded, err := DecodeStraceHex(hexStr)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(decoded) > ret {
-			decoded = decoded[:ret]
-		}
-
-		return &source.Chunk{
-			Bytes: decoded,
-			FD:    fd,
-			PID:   pid,
-			TS:    now,
-		}, nil
+		hexParts = []string{m[1]}
+		ret = m[3]
 	}
 
-	// Not a write to fd 1 or 2
-	return nil, nil
+	var data []byte
+	for _, part := range hexParts {
+		decoded, err := DecodeStraceHex(part)
+		if err != nil {
+			delete(p.pending, pid)
+			return nil, err
+		}
+		data = append(data, decoded...)
+	}
+
+	if ret == "" {
+		// <unfinished ...>: keep the payload until the resumed line gives the return value
+		p.pending[pid] = &pendingCall{fd: fd, data: data}
+		return nil, nil
+	}
+
+	n, _ := strconv.Atoi(ret)
+	return buildChunk(data, n, fd, pid, now), nil
+}
+
+// vectorHexParts returns the iov_base strings of a writev vector in order. When strace cut an element, the
+// elements after it are dropped, because their bytes would not follow the captured ones.
+func vectorHexParts(vector string) []string {
+	var parts []string
+	for _, m := range iovBaseRegex.FindAllStringSubmatch(vector, -1) {
+		parts = append(parts, m[1])
+		if m[2] != "" {
+			break
+		}
+	}
+	return parts
+}
+
+// buildChunk limits the captured bytes to the return value of the call. When the call wrote more than strace
+// captured, a marker and a newline follow the bytes, so the missing data is visible and the next line stays apart.
+func buildChunk(data []byte, ret, fd, pid int, now time.Time) *source.Chunk {
+	if ret <= 0 {
+		return nil
+	}
+	if len(data) > ret {
+		data = data[:ret]
+	} else if len(data) < ret {
+		data = append(data, fmt.Sprintf("[specter: %d more bytes not captured]\n", ret-len(data))...)
+	}
+	return &source.Chunk{
+		Bytes: data,
+		FD:    fd,
+		PID:   pid,
+		TS:    now,
+	}
 }
 
 // DecodeStraceHex decodes a strace hex-escaped string (e.g. `\x68\x65\x6c\x6c\x6f`).
