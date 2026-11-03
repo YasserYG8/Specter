@@ -2,10 +2,12 @@ package ui
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/YasserYG8/Specter/internal/resolver"
+	"github.com/fatih/color"
 )
 
 func TestFormatServiceItem(t *testing.T) {
@@ -153,5 +155,36 @@ func TestSelectService_NonTTYFallback(t *testing.T) {
 	}
 	if !strings.Contains(outBuf.String(), ":4000") || !strings.Contains(outBuf.String(), "dashboard") {
 		t.Errorf("expected table output, got: %s", outBuf.String())
+	}
+}
+
+// The picker redraws by moving the cursor up one line per row it printed. A row wider than the terminal wraps
+// onto a second line, the cursor ends up one line short, and the title is left behind on every keypress.
+// So every row must fit the terminal width, selected or not, colored or not.
+func TestFormatServiceItem_NeverWiderThanTerminal(t *testing.T) {
+	oldNoColor := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = oldNoColor }()
+
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	svc := resolver.DiscoveredService{
+		Kind:        resolver.ServiceKindHost,
+		Port:        4000,
+		PID:         63787,
+		ProcessName: "bun",
+		ProjectName: "agentgraph",
+		WorkingDir:  "/mnt/c/Users/Lenovo/Desktop/projects/agentgraph",
+	}
+
+	for _, width := range []int{60, 80, 100} {
+		for _, useColor := range []bool{false, true} {
+			for _, selected := range []bool{false, true} {
+				row := FormatServiceItem(svc, selected, useColor, width)
+				if visible := len(ansi.ReplaceAllString(row, "")); visible > width {
+					t.Errorf("width=%d color=%v selected=%v: row is %d columns wide and will wrap: %q",
+						width, useColor, selected, visible, ansi.ReplaceAllString(row, ""))
+				}
+			}
+		}
 	}
 }

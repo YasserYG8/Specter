@@ -191,7 +191,9 @@ func FormatServiceItem(s resolver.DiscoveredService, isSelected bool, useColor b
 	if len(termWidth) > 0 && termWidth[0] > 0 {
 		maxW = termWidth[0]
 	}
+	overflow := 0
 	if maxW > 0 && len(rawLine) > maxW {
+		overflow = len(rawLine) - maxW
 		if maxW > 4 {
 			rawLine = rawLine[:maxW-3] + "..."
 		} else {
@@ -202,6 +204,16 @@ func FormatServiceItem(s resolver.DiscoveredService, isSelected bool, useColor b
 	if useColor {
 		if isSelected {
 			return color.CyanString(rawLine)
+		}
+		// The colored row is built from its parts, so the truncation above does not reach it. A row wider than
+		// the terminal wraps, and the interactive picker then redraws one line short and repeats its title.
+		if overflow > 0 {
+			keep := len(target) - overflow - 3
+			if keep <= 0 {
+				// Not enough room to keep any of the last column: show the plain truncated row instead
+				return rawLine
+			}
+			target = target[:keep] + "..."
 		}
 		var tagColored string
 		if s.Kind == resolver.ServiceKindDocker {
