@@ -34,7 +34,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			PID: 596,
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev", "-p", "596"}
+		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -46,7 +46,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			Children: []int{629, 630},
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629", "-p", "630"}
+		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629", "-p", "630"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -58,7 +58,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			Children: []int{596, 629, 629, 0, -1},
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629"}
+		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -75,7 +75,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 		}
 		args := BuildStraceArgs(target)
 
-		expected := []string{"-f", "-qq", "-xx", "-s", "65536", "-e", "trace=write,writev", "-p", "500"}
+		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "500"}
 		for _, c := range children {
 			expected = append(expected, "-p", strconv.Itoa(c))
 		}
@@ -238,6 +238,91 @@ func TestReadLoop_ReportsWritesToOtherFDs(t *testing.T) {
 	}
 	if len(*notices) != 1 || !strings.Contains((*notices)[0], "/srv/app/server.log") {
 		t.Errorf("expected a notice naming the log file, got %v", *notices)
+	}
+}
+
+func TestShouldEmit(t *testing.T) {
+	const target = 100
+	terminal := streamRefs{"/dev/pts/3", "/dev/pts/3"}
+	pipes := streamRefs{"pipe:[100]", "pipe:[101]"}
+
+	cases := []struct {
+		name string
+		pid  int
+		dest string
+		refs streamRefs
+		want bool
+	}{
+		{"helper writes to a private pipe", 200, "pipe:[200]", pipes, false},
+		{"helper writes to /dev/null", 200, "/dev/null", terminal, false},
+		{"worker shares the target's stdout", 200, "pipe:[100]", pipes, true},
+		{"worker writes to the target's stderr", 200, "pipe:[101]", pipes, true},
+		{"child stdout is the target's stderr", 200, "/dev/pts/3", streamRefs{"pipe:[100]", "/dev/pts/3"}, true},
+		{"target writes to /dev/null", target, "/dev/null", terminal, true},
+		{"target writes to its own stdout", target, "/dev/pts/3", terminal, true},
+		{"target's stdout is /dev/null and a worker shares it", 200, "/dev/null", streamRefs{"/dev/null", "/dev/null"}, true},
+		{"destination unknown", 200, "", pipes, true},
+		{"both references unreadable", 200, "pipe:[200]", streamRefs{}, true},
+		{"one reference unreadable and no match", 200, "pipe:[200]", streamRefs{"pipe:[100]", ""}, true},
+		{"one reference unreadable and a match", 200, "pipe:[100]", streamRefs{"pipe:[100]", ""}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldEmit(tc.pid, tc.dest, target, tc.refs); got != tc.want {
+				t.Errorf("shouldEmit(pid=%d, dest=%q, refs=%v) = %v, want %v", tc.pid, tc.dest, tc.refs, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadStreamRefs(t *testing.T) {
+	t.Run("both readable", func(t *testing.T) {
+		s, _ := logNoticeSource(map[string]string{
+			"/fakeproc/10/fd/1": "pipe:[100]",
+			"/fakeproc/10/fd/2": "/dev/pts/3",
+		}, nil)
+		if got := s.readStreamRefs(10); got != (streamRefs{"pipe:[100]", "/dev/pts/3"}) {
+			t.Errorf("unexpected references %v", got)
+		}
+	})
+
+	t.Run("unreadable", func(t *testing.T) {
+		s, _ := logNoticeSource(map[string]string{"/fakeproc/10/fd/1": "pipe:[100]"}, nil)
+		if got := s.readStreamRefs(10); got != (streamRefs{"pipe:[100]", ""}) {
+			t.Errorf("expected only fd 1 to be read, got %v", got)
+		}
+		if got := s.readStreamRefs(11); got != (streamRefs{}) {
+			t.Errorf("expected no references for an unknown pid, got %v", got)
+		}
+	})
+}
+
+// A Next.js dev server starts helpers whose stdout is a pipe back to the server. strace -f reports their writes
+// to fd 1, but they never reach the server's own output.
+func TestReadLoop_DropsWritesToPrivateDestinations(t *testing.T) {
+	s := NewSource()
+	s.targetPID = 1
+	s.refs = streamRefs{"pipe:[100]", "pipe:[101]"}
+
+	input := strings.Join([]string{
+		`[pid 1] write(1<pipe:[100]>, "\x61\x0a", 2) = 2`,
+		`[pid 2] write(1<pipe:[200]>, "\x68\x65\x6c\x70\x65\x72\x0a", 7) = 7`,
+		`[pid 2] write(1</dev/null>, "\x6e\x75\x6c\x6c\x0a", 5) = 5`,
+		`[pid 3] write(1<pipe:[100]>, "\x62\x0a", 2) = 2`,
+		`[pid 3] write(2<pipe:[101]>, "\x63\x0a", 2 <unfinished ...>`,
+		`[pid 3] <... write resumed>)              = 2`,
+		`[pid 4] write(1, "\x64\x0a", 2) = 2`,
+		`[pid 4] write(1<pipe:[300]>, "\x70\x72\x69\x76\x61\x74\x65", 7 <unfinished ...>`,
+		`[pid 4] <... write resumed>)              = 7`,
+		``,
+	}, "\n")
+
+	var got string
+	for _, c := range runReadLoop(t, s, input) {
+		got += string(c.Bytes)
+	}
+	if got != "a\nb\nc\nd\n" {
+		t.Errorf("expected only the target's and the shared-stdout writes, got %q", got)
 	}
 }
 

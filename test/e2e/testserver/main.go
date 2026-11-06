@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,7 +18,8 @@ func main() {
 	roleFlag := flag.String("role", "parent", "Role: parent or child")
 	spawnChildFlag := flag.Bool("spawn-child", false, "Spawn child worker at startup")
 	workerIDFlag := flag.Int("id", 0, "Worker id for the numbered-writer role")
-	workerLinesFlag := flag.Int("lines", 0, "Lines to write for the numbered-writer role")
+	workerLinesFlag := flag.Int("lines", 0, "Lines to write for the numbered-writer and helper-writer roles")
+	tagFlag := flag.String("tag", "", "Line prefix for the helper-writer role")
 	workersFlag := flag.Int("workers", 0, "Start this many numbered-writer workers before the ready line")
 	waitFileFlag := flag.String("wait-file", "", "Numbered-writer workers wait for this file to exist before writing")
 	flag.Parse()
@@ -28,6 +30,10 @@ func main() {
 	}
 	if *roleFlag == "numbered-writer" {
 		runNumberedWriter(*workerIDFlag, *workerLinesFlag, *waitFileFlag)
+		return
+	}
+	if *roleFlag == "helper-writer" {
+		runHelperWriter(*tagFlag, *workerLinesFlag)
 		return
 	}
 
@@ -173,6 +179,40 @@ func main() {
 		fmt.Fprintf(w, "%d workers wrote %d lines each\n", count, lines)
 	})
 
+	// 5b2. Two helper processes, the way a dev server runs its tooling. "private" has its stdout connected to a
+	// pipe that this process reads and throws away, and its stderr on /dev/null, so nothing it writes reaches the
+	// server's own output. "shared" inherits stdout and stderr, so what it writes does.
+	mux.HandleFunc("/helpers", func(w http.ResponseWriter, r *http.Request) {
+		lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
+		if lines <= 0 {
+			lines = 5
+		}
+		private := exec.Command(os.Args[0], "-role=helper-writer", "-tag=private", fmt.Sprintf("-lines=%d", lines))
+		out, err := private.StdoutPipe()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		shared := exec.Command(os.Args[0], "-role=helper-writer", "-tag=shared", fmt.Sprintf("-lines=%d", lines))
+		shared.Stdout = os.Stdout
+		shared.Stderr = os.Stderr
+
+		if err := private.Start(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := shared.Start(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = io.Copy(io.Discard, out)
+		_ = private.Wait()
+		_ = shared.Wait()
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "helpers wrote %d lines each\n", lines)
+	})
+
 	// 5c. One line of N bytes, written with a single write, followed by a short line
 	mux.HandleFunc("/longline", func(w http.ResponseWriter, r *http.Request) {
 		size, _ := strconv.Atoi(r.URL.Query().Get("bytes"))
@@ -220,6 +260,14 @@ func runChildWorker() {
 		fmt.Fprintf(os.Stdout, `{"level":"info","msg":"child worker active","worker_pid":%d,"step":%d}`+"\n", os.Getpid(), i)
 		os.Stdout.Sync()
 		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// runHelperWriter writes "<tag>-out-<n>" to stdout and "<tag>-err-<n>" to stderr, one write(2) per line.
+func runHelperWriter(tag string, lines int) {
+	for i := 0; i < lines; i++ {
+		_, _ = os.Stdout.WriteString(fmt.Sprintf("%s-out-%d\n", tag, i))
+		_, _ = os.Stderr.WriteString(fmt.Sprintf("%s-err-%d\n", tag, i))
 	}
 }
 

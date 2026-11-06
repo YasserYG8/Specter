@@ -232,6 +232,46 @@ func TestE2E_LongLines(t *testing.T) {
 	run(100000, "[specter: 34465 more bytes not captured]")
 }
 
+// TestE2E_HelperWithPrivateOutputIsNotShown starts a helper whose stdout is a private pipe and stderr is /dev/null,
+// next to a helper that inherits the server's output. strace -f reports the writes of both; only the second one
+// reaches the server's output, so only that one may appear.
+func TestE2E_HelperWithPrivateOutputIsNotShown(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/YasserYG8/Specter/test/e2e/testserver", "testserver")
+
+	srv, cleanupServer := startTestServer(t, serverBin)
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	stdout, stderr, stop := attachSpecter(t, ctx, specterBin, srv)
+	defer stop()
+
+	const lines = 20
+	httpGet(t, fmt.Sprintf("http://127.0.0.1:%d/helpers?lines=%d", srv.Port, lines))
+	waitForOutputToSettle(t, stdout, 30*time.Second)
+	stop()
+
+	out := stdout.String()
+	for i := 0; i < lines; i++ {
+		for _, want := range []string{fmt.Sprintf("shared-out-%d", i), fmt.Sprintf("shared-err-%d", i)} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the helper that shares the server's output wrote %q, but it was not shown.\nStdout:\n%s\nStderr:\n%s", want, out, stderr.String())
+				return
+			}
+		}
+	}
+	if strings.Contains(out, "private-") {
+		t.Errorf("lines from the helper with a private stdout were shown:\n%s", out)
+	}
+	if strings.Contains(stderr.String(), "private-") {
+		t.Errorf("lines from the helper with a private stdout reached Specter's status output:\n%s", stderr.String())
+	}
+}
+
 func TestE2E_WritevCaptured(t *testing.T) {
 	requireLinux(t)
 

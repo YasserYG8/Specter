@@ -115,7 +115,7 @@ specter [port | pid | container | project] (or interactive picker)
    - **Docker Container** (checked first): Streams through the `docker` CLI (`docker logs`).
    - **Systemd Service**: Streams via `journalctl` if governed by systemd.
    - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
-   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes.
+   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes. A child process is shown only when its output goes to the same place as the server's own stdout or stderr. Helpers that write to a private pipe or to `/dev/null` (for example the tools a Next.js dev server starts) are not shown, because their lines never reach your terminal either.
 3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
 4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 

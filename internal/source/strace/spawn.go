@@ -42,6 +42,11 @@ type Source struct {
 	seenLogPaths       map[string]bool
 	oversizedPending   int
 	lastOversizeNotice time.Time
+
+	// Where the target's own stdout and stderr lead, read when tracing starts. Writes from other processes are
+	// output only when they go to the same place. Empty strings mean the destination could not be read.
+	targetPID int
+	refs      streamRefs
 }
 
 // NewSource creates a new StraceSource instance with optional configuration.
@@ -72,6 +77,10 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	}
 
 	s.parser = NewParser(target.PID)
+
+	// Read the target's stream destinations before strace starts, so no helper can write before they are known
+	s.targetPID = target.PID
+	s.refs = s.readStreamRefs(target.PID)
 
 	args := BuildStraceArgs(target)
 
@@ -178,12 +187,12 @@ func (s *Source) readLoop(ctx context.Context, r io.Reader, chunks chan<- source
 			return true
 		}
 
-		chunk, err := s.parser.ParseLine(line, time.Now())
+		chunk, dest, err := s.parser.ParseLineDest(line, time.Now())
 		if err != nil {
 			// Skip corrupt line without terminating stream
 			return true
 		}
-		if chunk != nil {
+		if chunk != nil && shouldEmit(chunk.PID, dest, s.targetPID, s.refs) {
 			select {
 			case chunks <- *chunk:
 			case <-ctx.Done():
@@ -246,6 +255,55 @@ func scanLines(r io.Reader, limit int, onLine func(string) bool, onTooLong func(
 	}
 }
 
+// streamRefs holds the destinations of the target's fd 1 and fd 2, as readlink on /proc/<pid>/fd prints them
+// ("pipe:[4021]", "/dev/pts/3", "/dev/null"). An empty string means that descriptor could not be read.
+type streamRefs [2]string
+
+// readStreamRefs reads where the target's stdout and stderr lead.
+func (s *Source) readStreamRefs(pid int) streamRefs {
+	root, readlink := s.procAccess()
+	var refs streamRefs
+	for i, fd := range []int{1, 2} {
+		if path, err := readlink(filepath.Join(root, strconv.Itoa(pid), "fd", strconv.Itoa(fd))); err == nil {
+			refs[i] = path
+		}
+	}
+	return refs
+}
+
+// procAccess returns the proc root and the readlink function, using the real ones unless a test replaced them.
+func (s *Source) procAccess() (string, func(string) (string, error)) {
+	s.mu.Lock()
+	root, readlink := s.procRoot, s.readlink
+	s.mu.Unlock()
+	if root == "" {
+		root = "/proc"
+	}
+	if readlink == nil {
+		readlink = os.Readlink
+	}
+	return root, readlink
+}
+
+// shouldEmit decides whether a write to fd 1 or 2 is output. The target's own writes always are, even when its
+// stdout is /dev/null, because showing output that goes nowhere is what Specter is for. A write by any other
+// traced process is output only when it goes to the same place as the target's stdout or stderr, which is how
+// workers that share the server's output are told apart from helpers writing to a private pipe or /dev/null.
+// Whenever the answer is unknown the write is output, since losing a real line is worse than showing an extra one.
+func shouldEmit(pid int, dest string, targetPID int, refs streamRefs) bool {
+	if pid == targetPID || dest == "" {
+		return true
+	}
+	for _, ref := range refs {
+		if ref != "" && dest == ref {
+			return true
+		}
+	}
+	// The write goes somewhere else. Drop it only if both of the target's streams were read, so an unreadable
+	// one cannot hide a line that belongs to it.
+	return refs[0] == "" || refs[1] == ""
+}
+
 // SetNotifier registers a function that receives status messages for the user, such as a target logging to
 // its own file. The messages are plain text; the caller decides where to print them.
 func (s *Source) SetNotifier(fn func(msg string)) {
@@ -297,16 +355,10 @@ func (s *Source) checkOtherFD(pid, fd int) {
 		return
 	}
 	s.seenFDs[key] = true
-	root := s.procRoot
-	readlink, isRegular := s.readlink, s.isRegularFile
+	isRegular := s.isRegularFile
 	s.mu.Unlock()
 
-	if root == "" {
-		root = "/proc"
-	}
-	if readlink == nil {
-		readlink = os.Readlink
-	}
+	root, readlink := s.procAccess()
 	if isRegular == nil {
 		isRegular = func(path string) bool {
 			fi, err := os.Stat(path)
@@ -359,12 +411,15 @@ func (s *Source) ProcessStatus() string {
 // BuildStraceArgs constructs the command-line arguments for strace execution,
 // including multi-PID attachment for pre-existing child worker processes.
 func BuildStraceArgs(target source.Target) []string {
-	// Build strace command: strace -f -qq -xx -s 65536 -e trace=write,writev -p PID [-p CHILD_PID...]
+	// Build strace command: strace -f -qq -xx -y -s 65536 -e trace=write,writev -p PID [-p CHILD_PID...]
 	// Note: -f is required so strace attaches to all threads of target processes
+	// Note: -y makes strace print where each descriptor leads at the moment of the call, which is how writes
+	// from helpers with a private stdout are told apart, even when the helper exits right after writing
 	args := []string{
 		"-f",
 		"-qq",
 		"-xx",
+		"-y",
 		"-s", "65536",
 		"-e", "trace=write,writev",
 		"-p", strconv.Itoa(target.PID),

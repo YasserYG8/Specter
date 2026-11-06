@@ -16,8 +16,9 @@ var (
 	// [pid 1234] or [pid  1234] prefix
 	pidPrefixRegex = regexp.MustCompile(`^\[pid\s+(\d+)\]\s+`)
 
-	// Start of a write or writev call: write(1,  or writev(2,
-	callStartRegex = regexp.MustCompile(`^(writev?)\((\d+),\s*`)
+	// Start of a write or writev call: write(1,  or writev(2,  With -y strace adds the descriptor's destination
+	// in angle brackets: write(1<pipe:[4021]>,  Under -xx that text is hex-encoded too.
+	callStartRegex = regexp.MustCompile(`^(writev?)\((\d+)(?:<([^>]*)>)?,\s*`)
 
 	// Arguments of write after the fd. Complete: "\x68\x65", 2) = 2. Cut by -s: "\x68\x65"..., 100) = 100.
 	// Overlapping with another call: "\x68\x65", 2 <unfinished ...> (the return value is empty).
@@ -36,6 +37,7 @@ var (
 type pendingCall struct {
 	fd   int
 	data []byte
+	dest string
 }
 
 // Parser parses strace write() and writev() output into source.Chunk instances.
@@ -57,9 +59,16 @@ func NewParser(defaultPID int) *Parser {
 
 // ParseLine parses a single strace line and returns a Chunk if a complete stdout/stderr write is found.
 func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
+	chunk, _, err := p.ParseLineDest(line, now)
+	return chunk, err
+}
+
+// ParseLineDest is ParseLine that also returns where the write went, as strace printed it with -y, for example
+// "pipe:[4021]" or "/dev/pts/3". The destination is empty when the line has no annotation or it cannot be decoded.
+func (p *Parser) ParseLineDest(line string, now time.Time) (*source.Chunk, string, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	pid := p.defaultPID
@@ -75,21 +84,22 @@ func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
 	if m := resumedRegex.FindStringSubmatch(line); m != nil {
 		pending, exists := p.pending[pid]
 		if !exists {
-			return nil, nil
+			return nil, "", nil
 		}
 		delete(p.pending, pid)
 
 		ret, _ := strconv.Atoi(m[2])
-		return buildChunk(pending.data, ret, pending.fd, pid, now), nil
+		return buildChunk(pending.data, ret, pending.fd, pid, now), pending.dest, nil
 	}
 
 	// 2. The start of a write or writev: complete, or split with <unfinished ...>
 	start := callStartRegex.FindStringSubmatch(line)
 	if start == nil {
-		return nil, nil
+		return nil, "", nil
 	}
 	isVector := start[1] == "writev"
 	fd, _ := strconv.Atoi(start[2])
+	dest := decodeDest(start[3])
 	rest := line[len(start[0]):]
 
 	if fd != 1 && fd != 2 {
@@ -98,7 +108,7 @@ func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
 		if p.OnOtherFD != nil {
 			p.OnOtherFD(pid, fd)
 		}
-		return nil, nil
+		return nil, "", nil
 	}
 
 	var hexParts []string
@@ -106,14 +116,14 @@ func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
 	if isVector {
 		m := writevArgsRegex.FindStringSubmatch(rest)
 		if m == nil {
-			return nil, nil
+			return nil, "", nil
 		}
 		hexParts = vectorHexParts(m[1])
 		ret = m[3]
 	} else {
 		m := writeArgsRegex.FindStringSubmatch(rest)
 		if m == nil {
-			return nil, nil
+			return nil, "", nil
 		}
 		hexParts = []string{m[1]}
 		ret = m[3]
@@ -124,19 +134,32 @@ func (p *Parser) ParseLine(line string, now time.Time) (*source.Chunk, error) {
 		decoded, err := DecodeStraceHex(part)
 		if err != nil {
 			delete(p.pending, pid)
-			return nil, err
+			return nil, "", err
 		}
 		data = append(data, decoded...)
 	}
 
 	if ret == "" {
-		// <unfinished ...>: keep the payload until the resumed line gives the return value
-		p.pending[pid] = &pendingCall{fd: fd, data: data}
-		return nil, nil
+		// <unfinished ...>: keep the payload and destination until the resumed line gives the return value
+		p.pending[pid] = &pendingCall{fd: fd, data: data, dest: dest}
+		return nil, "", nil
 	}
 
 	n, _ := strconv.Atoi(ret)
-	return buildChunk(data, n, fd, pid, now), nil
+	return buildChunk(data, n, fd, pid, now), dest, nil
+}
+
+// decodeDest turns the text strace printed between < and > into a plain destination. It returns "" when there
+// is no annotation or it cannot be decoded, which callers treat as "unknown".
+func decodeDest(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	decoded, err := DecodeStraceHex(raw)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
 }
 
 // vectorHexParts returns the iov_base strings of a writev vector in order. When strace cut an element, the

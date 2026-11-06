@@ -12,6 +12,7 @@
 - `writev` calls are now captured.
 - Lines up to 64 KB now arrive whole. A longer write keeps its line boundary and ends with `[specter: N more bytes not captured]`.
 - A very long line of `strace` output no longer stops the capture.
+- Lines that never reached the server's output are no longer shown. A Next.js dev server starts helper processes (such as `get-registry.js` and `telemetry/project-id.js`) whose output goes to a private pipe or `/dev/null`, but Specter printed it as if the server had logged it. Now a child process is shown only when its output goes to the same place as the server's own stdout or stderr. Workers that share the server's output are still shown, and so is everything the server writes itself, even when its stdout is `/dev/null`. If Specter cannot tell where a write went, it shows it.
 - Every worker process of a server is now traced. Specter used to trace only the first 16 and printed no warning, so with 20 workers running before it attached, the last 4 lost all their logs. While attached, all workers are slowed, not just 16 of them.
 
 ### Added

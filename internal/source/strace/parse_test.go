@@ -334,3 +334,122 @@ func TestParser_CutWrites(t *testing.T) {
 		}
 	})
 }
+
+// The lines below are real output of `strace -f -qq -xx -y -s 65536 -e trace=write,writev` (strace 6.8). Under
+// -xx the destination that -y prints is hex-encoded as well.
+func TestParser_DescriptorDestination(t *testing.T) {
+	now := time.Now()
+
+	cases := []struct {
+		name     string
+		line     string
+		wantData string
+		wantDest string
+	}{
+		{
+			name:     "write to a pipe",
+			line:     `[pid 535] write(1<\x70\x69\x70\x65\x3a\x5b\x31\x33\x38\x30\x36\x5d>, "\x70\x69\x70\x65\x20\x77\x72\x69\x74\x65\x0a", 11) = 11`,
+			wantData: "pipe write\n",
+			wantDest: "pipe:[13806]",
+		},
+		{
+			name:     "writev to a pipe",
+			line:     `[pid 535] writev(1<\x70\x69\x70\x65\x3a\x5b\x31\x33\x38\x30\x36\x5d>, [{iov_base="\x70\x69\x70\x65\x20\x77\x72\x69\x74\x65\x76\x2d\x61\x20", iov_len=14}, {iov_base="\x77\x72\x69\x74\x65\x76\x2d\x62\x0a", iov_len=9}], 2) = 23`,
+			wantData: "pipe writev-a writev-b\n",
+			wantDest: "pipe:[13806]",
+		},
+		{
+			name:     "write to /dev/null",
+			line:     `[pid 568] write(1<\x2f\x64\x65\x76\x2f\x6e\x75\x6c\x6c>, "\x6e\x75\x6c\x6c\x20\x77\x72\x69\x74\x65\x0a", 11) = 11`,
+			wantData: "null write\n",
+			wantDest: "/dev/null",
+		},
+		{
+			name:     "write to a terminal",
+			line:     `[pid 591] write(1<\x2f\x64\x65\x76\x2f\x70\x74\x73\x2f\x32>, "\x70\x74\x79\x20\x77\x72\x69\x74\x65\x0a", 10) = 10`,
+			wantData: "pty write\n",
+			wantDest: "/dev/pts/2",
+		},
+		{
+			name:     "write to a file",
+			line:     `[pid 580] write(1<\x2f\x74\x6d\x70\x2f\x66\x78\x2d\x6f\x75\x74\x2e\x74\x78\x74>, "\x66\x69\x6c\x65\x20\x77\x72\x69\x74\x65\x0a", 11) = 11`,
+			wantData: "file write\n",
+			wantDest: "/tmp/fx-out.txt",
+		},
+		{
+			name:     "annotation in plain text",
+			line:     `[pid 7] write(2</dev/pts/3>, "\x65\x72\x72", 3) = 3`,
+			wantData: "err",
+			wantDest: "/dev/pts/3",
+		},
+		{
+			name:     "no annotation",
+			line:     `[pid 7] write(1, "\x68\x69\x0a", 3) = 3`,
+			wantData: "hi\n",
+			wantDest: "",
+		},
+		{
+			name:     "single-process line without a pid prefix",
+			line:     `write(1<\x2f\x64\x65\x76\x2f\x6e\x75\x6c\x6c>, "\x68\x69\x0a", 3) = 3`,
+			wantData: "hi\n",
+			wantDest: "/dev/null",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewParser(1)
+			c, dest, err := p.ParseLineDest(tc.line, now)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c == nil || string(c.Bytes) != tc.wantData {
+				t.Fatalf("expected data %q, got %+v", tc.wantData, c)
+			}
+			if dest != tc.wantDest {
+				t.Errorf("expected destination %q, got %q", tc.wantDest, dest)
+			}
+		})
+	}
+
+	t.Run("split call keeps the destination until it resumes", func(t *testing.T) {
+		p := NewParser(1)
+		c, dest, err := p.ParseLineDest(`[pid 594] write(1<\x2f\x64\x65\x76\x2f\x70\x74\x73\x2f\x32>, "\x74\x68\x72\x65\x61\x64\x20\x32\x20\x6c\x69\x6e\x65\x20\x30\x0a", 16 <unfinished ...>`, now)
+		if err != nil || c != nil || dest != "" {
+			t.Fatalf("expected nothing for the unfinished entry, got %+v %q %v", c, dest, err)
+		}
+		// Another thread finishes a call in between; it must not take over this one's destination
+		c2, dest2, _ := p.ParseLineDest(`[pid 593] write(1<\x70\x69\x70\x65\x3a\x5b\x31\x5d>, "\x78\x0a", 2) = 2`, now)
+		if c2 == nil || dest2 != "pipe:[1]" {
+			t.Fatalf("expected the other thread's own destination, got %+v %q", c2, dest2)
+		}
+		c, dest, err = p.ParseLineDest(`[pid 594] <... write resumed>)              = 16`, now)
+		if err != nil || c == nil || string(c.Bytes) != "thread 2 line 0\n" {
+			t.Fatalf("expected the resumed write, got %+v %v", c, err)
+		}
+		if dest != "/dev/pts/2" {
+			t.Errorf("expected the destination of the unfinished entry, got %q", dest)
+		}
+	})
+
+	t.Run("destination that cannot be decoded is unknown", func(t *testing.T) {
+		p := NewParser(1)
+		c, dest, err := p.ParseLineDest(`[pid 7] write(1<\xZZ>, "\x68\x69\x0a", 3) = 3`, now)
+		if err != nil || c == nil || string(c.Bytes) != "hi\n" {
+			t.Fatalf("expected the write to still parse, got %+v %v", c, err)
+		}
+		if dest != "" {
+			t.Errorf("expected an unknown destination, got %q", dest)
+		}
+	})
+
+	t.Run("write to another descriptor with an annotation is still reported", func(t *testing.T) {
+		p := NewParser(1)
+		var gotPID, gotFD int
+		p.OnOtherFD = func(pid, fd int) { gotPID, gotFD = pid, fd }
+		c, _, _ := p.ParseLineDest(`[pid 9] write(3</var/log/app.log>, "\x68\x69", 2) = 2`, now)
+		if c != nil || gotPID != 9 || gotFD != 3 {
+			t.Errorf("expected no chunk and a report for pid 9 fd 3, got %+v pid=%d fd=%d", c, gotPID, gotFD)
+		}
+	})
+}
