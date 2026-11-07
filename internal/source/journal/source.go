@@ -17,6 +17,7 @@ type Source struct {
 	mu          sync.Mutex
 	cmd         *exec.Cmd
 	journalPath string
+	followsPID  bool // true when following _PID=<pid>, false when following a systemd unit
 }
 
 // NewSource creates a new JournalSource instance.
@@ -49,6 +50,9 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 		args = append(args, "-u", unit)
 	} else if target.PID > 0 {
 		args = append(args, fmt.Sprintf("_PID=%d", target.PID))
+		s.mu.Lock()
+		s.followsPID = true
+		s.mu.Unlock()
 	} else {
 		errs <- fmt.Errorf("neither PID nor systemd unit provided for journal attachment")
 		close(chunks)
@@ -120,6 +124,14 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	}()
 
 	return chunks, errs
+}
+
+// FollowsPID reports whether the journal is followed for one process (_PID=) rather than for a systemd unit.
+// A unit outlives its main process, because systemd restarts it, so only a followed PID can "end".
+func (s *Source) FollowsPID() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.followsPID
 }
 
 // Stop cleanly terminates journalctl streaming.

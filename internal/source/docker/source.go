@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,9 @@ type Source struct {
 	cmd         *exec.Cmd
 	dockerPath  string // Custom path or binary name (defaults to "docker")
 	containerID string
+
+	// inspect runs `docker inspect` for the container state. Tests replace it; nil runs the real command.
+	inspect func(ctx context.Context, container string) ([]byte, error)
 }
 
 // NewSource creates a new Docker source instance.
@@ -134,6 +139,50 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	}()
 
 	return chunks, errs
+}
+
+// containerStateTimeout bounds the one `docker inspect` that runs after the log stream ends.
+const containerStateTimeout = 3 * time.Second
+
+// ContainerExit asks Docker how the container ended, for use after `docker logs -f` stopped on its own. The
+// second result is false when the container has not exited or its state cannot be read, and callers then say
+// only that it stopped.
+func (s *Source) ContainerExit(ctx context.Context) (int, bool) {
+	s.mu.Lock()
+	id, path, inspect := s.containerID, s.dockerPath, s.inspect
+	s.mu.Unlock()
+	if id == "" {
+		return 0, false
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, containerStateTimeout)
+	defer cancel()
+
+	var out []byte
+	var err error
+	if inspect != nil {
+		out, err = inspect(ctx, id)
+	} else {
+		out, err = exec.CommandContext(ctx, path, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", id).Output()
+	}
+	if err != nil {
+		return 0, false
+	}
+	return parseContainerState(string(out))
+}
+
+// parseContainerState reads the "<status> <exit code>" text that `docker inspect -f` prints. Only an exited
+// container has an exit code worth reporting.
+func parseContainerState(out string) (int, bool) {
+	fields := strings.Fields(out)
+	if len(fields) != 2 || fields[0] != "exited" {
+		return 0, false
+	}
+	code, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, false
+	}
+	return code, true
 }
 
 // Stop cleanly terminates the docker logs subprocess.

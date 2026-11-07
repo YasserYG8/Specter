@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/YasserYG8/Specter/internal/pipeline"
+	"github.com/YasserYG8/Specter/internal/procwatch"
 	"github.com/YasserYG8/Specter/internal/resolver"
 	"github.com/YasserYG8/Specter/internal/source"
 	"github.com/YasserYG8/Specter/internal/source/selector"
@@ -377,7 +378,8 @@ Zero configuration, zero wrappers, read-only.`,
 
 			// Check ptrace permissions upfront if strace source is selected
 			if src.Name() == "strace" {
-				if permErr := strace.CheckPtracePermissions(""); permErr != nil {
+				// Root can attach at ptrace_scope 1 and 2, so it gets no warning there
+				if permErr := strace.CheckPtracePermissionsAs("", os.Geteuid()); permErr != nil {
 					fmt.Fprintf(os.Stderr, "%s %v\n", color.YellowString("[specter:warning]"), permErr)
 				}
 			}
@@ -408,8 +410,16 @@ Zero configuration, zero wrappers, read-only.`,
 			}
 			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
 
+			// The source and the pipeline get their own contexts. The process watcher stops the source when the
+			// target is gone and gives the pipeline a moment to print what was already read, while the user's
+			// interrupt (ctx) stops both at once.
+			srcCtx, cancelSrc := context.WithCancelCause(ctx)
+			defer cancelSrc(nil)
+			pipeCtx, cancelPipe := context.WithCancel(ctx)
+			defer cancelPipe()
+
 			wireNotices(src)
-			chunks, errs := src.Start(ctx, *target)
+			chunks, errs := src.Start(srcCtx, *target)
 
 			// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
 			if flagSource == "" && src.Name() != "strace" {
@@ -420,20 +430,40 @@ Zero configuration, zero wrappers, read-only.`,
 							headerTag, src.Name(), err)
 						src = strace.NewSource(strace.Options{FollowTree: flagTree})
 						wireNotices(src)
-						chunks, errs = src.Start(ctx, *target)
+						chunks, errs = src.Start(srcCtx, *target)
 					}
 				default:
 					// Started normally
 				}
 			}
 
+			// Watch the target process, for sources that cannot tell when it ends. strace usually does, with the
+			// exit code, but the file source only tails a file and would wait forever.
+			var watcherGone atomic.Bool
+			if watchesPID(src, target) {
+				gone := procwatch.Watch(pipeCtx, target.PID, procwatch.Options{})
+				go func() {
+					select {
+					case <-gone:
+						watcherGone.Store(true)
+						cancelSrc(errTargetGone)
+						select {
+						case <-time.After(drainGrace):
+							cancelPipe()
+						case <-pipeCtx.Done():
+						}
+					case <-pipeCtx.Done():
+					}
+				}()
+			}
+
 			// 1. Line assembler
 			assembler := pipeline.NewLineAssembler(pipeline.DefaultIdleTimeout)
-			lines := assembler.Assemble(ctx, chunks)
+			lines := assembler.Assemble(pipeCtx, chunks)
 
 			// 2. Multi-line stack trace grouper
 			grouper := pipeline.NewStackTraceGrouper(pipeline.DefaultTraceIdleTimeout)
-			entries := grouper.Group(ctx, lines)
+			entries := grouper.Group(pipeCtx, lines)
 
 			// 3. Filter configuration
 			minSeverity := pipeline.ParseSeverity(flagLevel)
@@ -450,7 +480,7 @@ Zero configuration, zero wrappers, read-only.`,
 			// With --grep, hold each stack trace until it ends, so a match on any of its lines shows the whole
 			// trace. Without --grep nothing is held and output stays immediate.
 			if flagGrep != "" {
-				entries = pipeline.NewTraceHolder(filter.MatchText, pipeline.DefaultTraceIdleTimeout, pipeline.MaxHeldTraceLines).Hold(ctx, entries)
+				entries = pipeline.NewTraceHolder(filter.MatchText, pipeline.DefaultTraceIdleTimeout, pipeline.MaxHeldTraceLines).Hold(pipeCtx, entries)
 			}
 
 			// 4. Renderer configuration
@@ -461,7 +491,7 @@ Zero configuration, zero wrappers, read-only.`,
 			})
 
 			// 5. Stream styled entries to terminal
-			sawEntry, stopNoOutputNotice := startNoOutputNotice(ctx, noOutputNoticeDelay, os.Stderr)
+			sawEntry, stopNoOutputNotice := startNoOutputNotice(pipeCtx, noOutputNoticeDelay, os.Stderr)
 			defer stopNoOutputNotice()
 			for entry := range entries {
 				sawEntry() // counted before filters: output hidden by --grep or --level is not silence
@@ -479,22 +509,39 @@ Zero configuration, zero wrappers, read-only.`,
 
 			// Check for source startup or runtime errors (draining without blocking)
 			srcErr, ok := <-errs
-			if ok && srcErr != nil && ctx.Err() == nil {
+			if ok && srcErr != nil && ctx.Err() == nil && !watcherGone.Load() {
 				return srcErr
 			}
 
-			// Check if target process terminated while being traced
-			if statusProvider, ok := src.(interface{ ProcessStatus() string }); ok {
-				if status := statusProvider.ProcessStatus(); status != "" && ctx.Err() == nil {
-					fmt.Fprintf(os.Stderr, "\n%s Target %s\n", headerTag, status)
-					return nil
+			// Say how the run ended. "Detached cleanly" is only for the user's interrupt; when the target ended on
+			// its own, Specter says how and exits with status 1.
+			report := endReport{
+				Interrupted: ctx.Err() != nil,
+				PID:         target.PID,
+				Container:   target.Container,
+				WatcherGone: watcherGone.Load(),
+			}
+			if es, ok := src.(interface {
+				ExitStatus() (strace.ExitStatus, bool)
+			}); ok {
+				if status, known := es.ExitStatus(); known {
+					report.Exit = &status
 				}
 			}
-
-			if target.Container != "" {
-				fmt.Fprintf(os.Stderr, "\n%s Detached from container %s cleanly.\n", headerTag, target.Container)
-			} else {
-				fmt.Fprintf(os.Stderr, "\n%s Detached from PID %d cleanly.\n", headerTag, target.PID)
+			if src.Name() == "docker" && !report.Interrupted {
+				// docker logs -f ends when the container stops; ask once for the exit code
+				report.DockerEnded = true
+				if ce, ok := src.(interface {
+					ContainerExit(context.Context) (int, bool)
+				}); ok {
+					if code, known := ce.ContainerExit(ctx); known {
+						report.ContainerCode = &code
+					}
+				}
+			}
+			if reportEnd(os.Stderr, headerTag, report) != 0 {
+				cmd.SilenceErrors = true
+				return errTargetEnded
 			}
 			return nil
 		},

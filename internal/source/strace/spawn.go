@@ -29,7 +29,7 @@ type Source struct {
 	cmd           *exec.Cmd
 	parser        *Parser
 	capturedError string
-	processStatus string
+	exit          *ExitStatus // how the target ended, once strace has printed its exit line
 	options       Options
 
 	// Notices and tests
@@ -179,11 +179,17 @@ func (s *Source) readLoop(ctx context.Context, r io.Reader, chunks chan<- source
 			return true
 		}
 
-		// Detect target process termination
-		if strings.Contains(line, "+++ exited with ") || strings.Contains(line, "+++ killed by ") {
-			s.mu.Lock()
-			s.processStatus = strings.TrimSpace(line)
-			s.mu.Unlock()
+		// Exit lines: every traced thread, worker and helper prints one under -f, but only the target's counts
+		if st, ok := s.parser.ParseExit(line); ok {
+			if st.PID == s.parser.defaultPID {
+				s.mu.Lock()
+				// A line without a prefix is printed while only one process is left. It is the target's own end
+				// only if the target has not ended yet; after that it is the last child that outlived the target
+				if s.exit == nil || !st.Unprefixed {
+					s.exit = &st
+				}
+				s.mu.Unlock()
+			}
 			return true
 		}
 
@@ -401,23 +407,29 @@ func (s *Source) Stop() error {
 	return nil
 }
 
-// ProcessStatus returns any exit status detected from strace output.
-func (s *Source) ProcessStatus() string {
+// ExitStatus returns how the target ended, when strace has reported it. The second result is false while the
+// target is still running, and when strace never printed its exit line.
+func (s *Source) ExitStatus() (ExitStatus, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.processStatus
+	if s.exit == nil {
+		return ExitStatus{}, false
+	}
+	return *s.exit, true
 }
 
 // BuildStraceArgs constructs the command-line arguments for strace execution,
 // including multi-PID attachment for pre-existing child worker processes.
 func BuildStraceArgs(target source.Target) []string {
-	// Build strace command: strace -f -qq -xx -y -s 65536 -e trace=write,writev -p PID [-p CHILD_PID...]
+	// Build strace command: strace -f -q -xx -y -s 65536 -e trace=write,writev -p PID [-p CHILD_PID...]
 	// Note: -f is required so strace attaches to all threads of target processes
+	// Note: a single -q hides attach and detach messages but keeps "+++ exited with N +++", which -qq hides.
+	// Those lines are how the end of the target is reported with its exit code.
 	// Note: -y makes strace print where each descriptor leads at the moment of the call, which is how writes
 	// from helpers with a private stdout are told apart, even when the helper exits right after writing
 	args := []string{
 		"-f",
-		"-qq",
+		"-q",
 		"-xx",
 		"-y",
 		"-s", "65536",

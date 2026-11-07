@@ -202,6 +202,22 @@ AAAA...AAAA[specter: 34465 more bytes not captured]
 
 The marker is also shown with `--raw`. A line over 64 KB that was built from several smaller writes is cut when rendered and ends with `... [specter: truncated at 64KB]`.
 
+### When the target stops
+
+If the server you are watching stops, Specter stops too, prints one line about how it ended, and exits with status **1**:
+
+```
+[specter] Target PID 617 exited with code 3.
+[specter] Target PID 595 was killed by SIGTERM.
+[specter] Target PID 595 was killed by SIGKILL.
+[specter] SIGKILL often comes from the kernel's out-of-memory killer. To check: dmesg | grep -i oom
+[specter] Container billing-api exited with code 137.
+```
+
+When the exit code cannot be known (a process that writes to a log file, for example, because only a parent can read the exit code of a process after it is gone), the line is `Target PID 595 exited.` Specter notices within about a second.
+
+`Detached from PID N cleanly.` is printed only when **you** stop Specter with Ctrl+C, and then the exit status is **0**. A script can tell the two apart by the exit status. A server that systemd restarts is not reported as stopped: when Specter follows a systemd unit, it keeps following it.
+
 ---
 
 ## Performance While Attached

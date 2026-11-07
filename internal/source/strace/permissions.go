@@ -39,7 +39,15 @@ func CheckStraceInstalled() error {
 }
 
 // CheckPtracePermissions checks /proc/sys/kernel/yama/ptrace_scope and returns an error with remediation if restricted.
+// It does not know who is asking, so it warns at scope 1 and 2 for everyone. Use CheckPtracePermissionsAs when the
+// user is known.
 func CheckPtracePermissions(procRoot string) error {
+	return CheckPtracePermissionsAs(procRoot, -1)
+}
+
+// CheckPtracePermissionsAs is CheckPtracePermissions for a user with the given effective user ID. Root can attach
+// at scope 1 and 2, so it gets no warning there, but scope 3 disables ptrace for everyone, root included.
+func CheckPtracePermissionsAs(procRoot string, euid int) error {
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
@@ -51,6 +59,9 @@ func CheckPtracePermissions(procRoot string) error {
 	}
 
 	scope := strings.TrimSpace(string(data))
+	if euid == 0 && (scope == "1" || scope == "2") {
+		return nil
+	}
 	switch scope {
 	case "0":
 		// Normal ptrace allowed

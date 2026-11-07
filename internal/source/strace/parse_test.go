@@ -335,7 +335,7 @@ func TestParser_CutWrites(t *testing.T) {
 	})
 }
 
-// The lines below are real output of `strace -f -qq -xx -y -s 65536 -e trace=write,writev` (strace 6.8). Under
+// The lines below are real output of `strace -f -q -xx -y -s 65536 -e trace=write,writev` (strace 6.8). Under
 // -xx the destination that -y prints is hex-encoded as well.
 func TestParser_DescriptorDestination(t *testing.T) {
 	now := time.Now()
@@ -452,4 +452,42 @@ func TestParser_DescriptorDestination(t *testing.T) {
 			t.Errorf("expected no chunk and a report for pid 9 fd 3, got %+v pid=%d fd=%d", c, gotPID, gotFD)
 		}
 	})
+}
+
+// The lines below are real output of `strace -f -q -xx -y` on strace 6.8, read from stderr. With -qq the
+// "exited with" lines are not printed at all, but the "killed by" lines are.
+func TestParser_ParseExit(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want ExitStatus
+		ok   bool
+	}{
+		{"exit code, target without a prefix", `+++ exited with 3 +++`, ExitStatus{PID: 617, Code: 3, Unprefixed: true}, true},
+		{"exit code 0", `+++ exited with 0 +++`, ExitStatus{PID: 617, Code: 0, Unprefixed: true}, true},
+		{"exit code with a pid prefix", `[pid   575] +++ exited with 0 +++`, ExitStatus{PID: 575, Code: 0}, true},
+		{"killed by SIGKILL", `+++ killed by SIGKILL +++`, ExitStatus{PID: 617, Signal: "SIGKILL", Unprefixed: true}, true},
+		{"killed by SIGTERM with a prefix", `[pid 595] +++ killed by SIGTERM +++`, ExitStatus{PID: 595, Signal: "SIGTERM"}, true},
+		{"killed with a core dump", `+++ killed by SIGSEGV (core dumped) +++`, ExitStatus{PID: 617, Signal: "SIGSEGV", Unprefixed: true}, true},
+		{"surrounding whitespace", "  +++ exited with 7 +++  ", ExitStatus{PID: 617, Code: 7, Unprefixed: true}, true},
+		{"a write", `[pid 5] write(1, "\x68\x69", 2) = 2`, ExitStatus{}, false},
+		{"a signal line", `--- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED} ---`, ExitStatus{}, false},
+		{"text that mentions exiting", `exited with 3`, ExitStatus{}, false},
+		{"empty", ``, ExitStatus{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := NewParser(617).ParseExit(tc.line)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("ParseExit(%q) = %+v, %v; want %+v, %v", tc.line, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+
+	if st, _ := NewParser(1).ParseExit(`+++ killed by SIGKILL +++`); !st.Killed() {
+		t.Error("expected Killed() for a signal")
+	}
+	if st, _ := NewParser(1).ParseExit(`+++ exited with 9 +++`); st.Killed() {
+		t.Error("an exit code is not a kill")
+	}
 }

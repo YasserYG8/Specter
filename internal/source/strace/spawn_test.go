@@ -34,7 +34,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			PID: 596,
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596"}
+		expected := []string{"-f", "-q", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -46,7 +46,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			Children: []int{629, 630},
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629", "-p", "630"}
+		expected := []string{"-f", "-q", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629", "-p", "630"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -58,7 +58,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 			Children: []int{596, 629, 629, 0, -1},
 		}
 		args := BuildStraceArgs(target)
-		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629"}
+		expected := []string{"-f", "-q", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "596", "-p", "629"}
 		if !reflect.DeepEqual(args, expected) {
 			t.Errorf("expected args %v, got %v", expected, args)
 		}
@@ -75,7 +75,7 @@ func TestBuildStraceArgs_MultiPID(t *testing.T) {
 		}
 		args := BuildStraceArgs(target)
 
-		expected := []string{"-f", "-qq", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "500"}
+		expected := []string{"-f", "-q", "-xx", "-y", "-s", "65536", "-e", "trace=write,writev", "-p", "500"}
 		for _, c := range children {
 			expected = append(expected, "-p", strconv.Itoa(c))
 		}
@@ -349,5 +349,118 @@ func TestReadLoop_FailedAttachDoesNotStopCapture(t *testing.T) {
 	s.mu.Unlock()
 	if !strings.Contains(captured, "No such process") {
 		t.Errorf("expected the attach error to be remembered, got %q", captured)
+	}
+}
+
+func TestExitStatus_OnlyTheTargetCounts(t *testing.T) {
+	run := func(t *testing.T, lines ...string) (ExitStatus, bool) {
+		t.Helper()
+		s := NewSource()
+		runReadLoop(t, s, strings.Join(lines, "\n")+"\n") // the parser's default PID, the target, is 1
+		return s.ExitStatus()
+	}
+
+	t.Run("still running", func(t *testing.T) {
+		if st, ok := run(t, `write(1, "\x61\x0a", 2) = 2`); ok {
+			t.Errorf("expected no status, got %+v", st)
+		}
+	})
+
+	t.Run("a line without a prefix belongs to the target", func(t *testing.T) {
+		st, ok := run(t, `+++ exited with 3 +++`)
+		if !ok || st != (ExitStatus{PID: 1, Code: 3, Unprefixed: true}) {
+			t.Errorf("got %+v, %v", st, ok)
+		}
+	})
+
+	t.Run("killed by a signal", func(t *testing.T) {
+		st, ok := run(t, `[pid 1] +++ killed by SIGKILL +++`)
+		if !ok || st != (ExitStatus{PID: 1, Signal: "SIGKILL"}) {
+			t.Errorf("got %+v, %v", st, ok)
+		}
+	})
+
+	t.Run("a helper exits before the target", func(t *testing.T) {
+		st, ok := run(t,
+			`[pid 5101] +++ exited with 0 +++`,
+			`[pid     1] +++ exited with 3 +++`)
+		if !ok || st != (ExitStatus{PID: 1, Code: 3}) {
+			t.Errorf("expected the target's code 3, got %+v, %v", st, ok)
+		}
+	})
+
+	t.Run("a child exits after the target", func(t *testing.T) {
+		st, ok := run(t,
+			`[pid 1] +++ exited with 3 +++`,
+			`[pid 5101] +++ exited with 0 +++`)
+		if !ok || st != (ExitStatus{PID: 1, Code: 3}) {
+			t.Errorf("expected the target's code 3 to survive the child's exit, got %+v, %v", st, ok)
+		}
+	})
+
+	t.Run("only helpers have exited", func(t *testing.T) {
+		if st, ok := run(t, `[pid 5101] +++ exited with 0 +++`, `[pid 5102] +++ killed by SIGTERM +++`); ok {
+			t.Errorf("a helper's end must not be reported as the target's, got %+v", st)
+		}
+	})
+
+	t.Run("exit lines do not disturb writes", func(t *testing.T) {
+		s := NewSource()
+		chunks := runReadLoop(t, s, strings.Join([]string{
+			`[pid 1] write(1, "\x61\x0a", 2) = 2`,
+			`[pid 7] +++ exited with 0 +++`,
+			`[pid 1] write(1, "\x62\x0a", 2) = 2`,
+			`+++ exited with 0 +++`,
+		}, "\n")+"\n")
+		if len(chunks) != 2 || string(chunks[0].Bytes) != "a\n" || string(chunks[1].Bytes) != "b\n" {
+			t.Errorf("expected the two writes, got %+v", chunks)
+		}
+	})
+}
+
+// Real output of `strace -f -q` attached to a target (PID 1319) and its children. While several processes are
+// traced every line has a prefix. The child that is left last prints its exit line WITHOUT one, so it looks like
+// the target's. This is what made `exit 3` be reported as code 0.
+func TestExitStatus_LastSurvivingChildIsNotTheTarget(t *testing.T) {
+	s := NewSource()
+	s.parser = NewParser(1319)
+	chunks := make(chan source.Chunk, 8)
+	input := strings.Join([]string{
+		`[pid  1331] +++ exited with 0 +++`,
+		`[pid  1339] +++ exited with 0 +++`,
+		`[pid  1319] +++ exited with 3 +++`,
+		`+++ exited with 0 +++`,
+	}, "\n") + "\n"
+	s.readLoop(context.Background(), strings.NewReader(input), chunks)
+
+	st, ok := s.ExitStatus()
+	if !ok || st.Code != 3 || st.Signal != "" {
+		t.Fatalf("expected the target's own exit code 3, got %+v, %v", st, ok)
+	}
+	if st.PID != 1319 {
+		t.Errorf("expected PID 1319, got %d", st.PID)
+	}
+}
+
+func TestExitStatus_ASignalIsNotOverwrittenByTheLastChild(t *testing.T) {
+	s := NewSource()
+	s.parser = NewParser(900)
+	chunks := make(chan source.Chunk, 8)
+	input := "[pid   900] +++ killed by SIGTERM +++\n+++ exited with 0 +++\n"
+	s.readLoop(context.Background(), strings.NewReader(input), chunks)
+
+	st, ok := s.ExitStatus()
+	if !ok || st.Signal != "SIGTERM" {
+		t.Fatalf("expected the target to be reported as killed by SIGTERM, got %+v, %v", st, ok)
+	}
+}
+
+// With a lone target there is no prefix at all, and that line is the target's.
+func TestExitStatus_LoneTargetWithoutPrefix(t *testing.T) {
+	s := NewSource()
+	s.parser = NewParser(617)
+	s.readLoop(context.Background(), strings.NewReader("+++ exited with 3 +++\n"), make(chan source.Chunk, 1))
+	if st, ok := s.ExitStatus(); !ok || st.Code != 3 || st.PID != 617 {
+		t.Fatalf("expected PID 617 exit code 3, got %+v, %v", st, ok)
 	}
 }

@@ -540,6 +540,14 @@ func TestE2E_CleanDetachment(t *testing.T) {
 	cancel()
 	_ = cmd.Wait()
 
+	// The user's interrupt is a clean detach: exit status 0, and the message says so
+	if code := cmd.ProcessState.ExitCode(); code != 0 {
+		t.Errorf("an interrupt by the user should exit with status 0, got %d.\nStderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), fmt.Sprintf("Detached from PID %d cleanly.", srv.PID)) {
+		t.Errorf("expected the detach message.\nStderr:\n%s", stderr.String())
+	}
+
 	// Assert test server is still alive and healthy post-detachment
 	healthResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", srv.Port))
 	if err != nil {
@@ -599,19 +607,55 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 		_ = exitResp.Body.Close()
 	}
 
-	// Specter should exit cleanly when target process exits
+	// Specter should stop on its own, say how the target ended, and exit with status 1
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
 
 	select {
-	case err := <-done:
-		if err != nil && !strings.Contains(err.Error(), "exit status") {
-			t.Logf("Specter exited with: %v (expected upon target termination)", err)
-		}
+	case <-done:
 	case <-time.After(30 * time.Second):
 		t.Fatalf("Specter did not terminate within timeout after target exited")
+	}
+
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("a target that ended on its own should give exit status 1, got %d.\nStderr:\n%s", code, stderr.String())
+	}
+	if want := fmt.Sprintf("Target PID %d exited with code 0.", srv.PID); !strings.Contains(stderr.String(), want) {
+		t.Errorf("expected %q.\nStderr:\n%s", want, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Detached") {
+		t.Errorf("'Detached cleanly' is only for the user's interrupt.\nStderr:\n%s", stderr.String())
+	}
+}
+
+func TestE2E_TargetKilledIsReported(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/YasserYG8/Specter/test/e2e/testserver", "testserver")
+
+	srv, cleanupServer := startTestServer(t, serverBin)
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	_, stderr, stop := attachSpecter(t, ctx, specterBin, srv)
+	defer stop()
+
+	// SIGKILL cannot be caught, so this is how an out-of-memory kill looks to the target's watcher
+	if err := srv.cmd.Process.Kill(); err != nil {
+		t.Fatalf("failed to kill the test server: %v", err)
+	}
+
+	want := fmt.Sprintf("Target PID %d was killed by SIGKILL.", srv.PID)
+	if !waitForCondition(t, 30*time.Second, func() bool { return strings.Contains(stderr.String(), want) }) {
+		t.Fatalf("expected %q.\nStderr:\n%s", want, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "out-of-memory killer") || !strings.Contains(stderr.String(), "dmesg | grep -i oom") {
+		t.Errorf("expected the out-of-memory hint after a SIGKILL.\nStderr:\n%s", stderr.String())
 	}
 }
 

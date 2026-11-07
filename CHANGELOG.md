@@ -4,11 +4,14 @@
 
 ### Breaking
 
+- Specter now exits with status 1 when the target ended on its own (it exited, crashed or was killed, or the container stopped), and with status 0 only when you stopped it with Ctrl+C. It used to exit with 0 in both cases, so a script could not tell a crashed server from a normal stop.
 - A bare number from 1 to 65535 is now a port and nothing else. It used to fall back to the process with that PID when nothing listened on the port, so `specter 3000` with your server down could attach `strace` to an unrelated process (and slow it) while only printing `Attaching to PID 3000 (systemd-journald)`. Now Specter prints "No process is listening on port 3000" with the active ports, exits with an error and attaches to nothing. If a process with that PID exists, the message ends with `Hint: PID 3000 exists (systemd-journald). To attach to it: specter --pid 3000`. To attach by PID, use the new `--pid` (`-p`) flag, for example `specter --pid 14280`. A number above 65535 cannot be a port, so `specter 70000` still attaches to PID 70000.
 - `--level` with an unknown value is now an error that lists the valid levels. It used to be ignored, so `--level banana` showed every line. Aliases such as `warning`, `err` and `fatal` still work.
 
 ### Fixed
 
+- Specter now says how the target ended. A normal exit used to print "Detached from PID N cleanly" (strace hid the exit line), and a target that wrote to a log file kept Specter waiting forever, with no message, until you pressed Ctrl+C. Now it prints `Target PID 617 exited with code 3.`, `Target PID 595 was killed by SIGKILL.` (with a hint about the kernel's out-of-memory killer and `dmesg | grep -i oom`), or `Container billing-api exited with code 137.`, and stops within about a second. "Detached cleanly" now means only that you interrupted. Only the target's own exit is reported, not that of a worker or helper.
+- The `ptrace_scope` warning is no longer shown when Specter runs as root, since root can attach at scope 1 and 2. It is still shown at scope 3, which blocks everyone.
 - Overlapping writes from threads and worker processes are no longer lost. With 4 worker processes writing 12,000 lines, Specter used to capture only a few hundred.
 - `writev` calls are now captured.
 - Lines up to 64 KB now arrive whole. A longer write keeps its line boundary and ends with `[specter: N more bytes not captured]`.
