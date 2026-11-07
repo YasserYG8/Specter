@@ -444,6 +444,12 @@ Zero configuration, zero wrappers, read-only.`,
 				printNotice(os.Stderr, fmt.Sprintf("--grep %q is not a valid regular expression (%v); matching it as literal text.", flagGrep, err))
 			}
 
+			// With --grep, hold each stack trace until it ends, so a match on any of its lines shows the whole
+			// trace. Without --grep nothing is held and output stays immediate.
+			if flagGrep != "" {
+				entries = pipeline.NewTraceHolder(filter.MatchText, pipeline.DefaultTraceIdleTimeout, pipeline.MaxHeldTraceLines).Hold(ctx, entries)
+			}
+
 			// 4. Renderer configuration
 			renderer := pipeline.NewRenderer(pipeline.RendererOptions{
 				NoColor:   flagNoColor,

@@ -60,6 +60,12 @@ func (f *Filter) matchText(text string) bool {
 	return strings.Contains(strings.ToLower(text), strings.ToLower(f.opts.Grep))
 }
 
+// MatchText reports whether text matches the --grep pattern, with the same regex or literal rules Matches uses.
+// It is true when no pattern is set. TraceHolder uses it to decide whether a whole stack trace matches.
+func (f *Filter) MatchText(text string) bool {
+	return f.matchText(text)
+}
+
 // Matches returns true if the entry satisfies all filter conditions.
 func (f *Filter) Matches(entry *Entry) bool {
 	// 1. OnlyStderr check
@@ -80,6 +86,13 @@ func (f *Filter) Matches(entry *Entry) bool {
 		key := streamKey{pid: entry.PID, fd: entry.FD}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+
+		// TraceHolder saw a line of this stack trace match, so the whole trace is shown. Later lines of the same
+		// record keep inheriting the match, which matters for a trace longer than the holder keeps.
+		if entry.MatchedGrep {
+			f.activeMatch[key] = true
+			return true
+		}
 
 		lineMatched := f.matchText(entry.Text())
 

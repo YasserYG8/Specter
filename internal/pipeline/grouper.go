@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -31,7 +30,12 @@ type Entry struct {
 	TS                   time.Time
 	Raw                  string
 	Safe                 string
-	MatchedGrep          bool
+	// MatchedGrep is set by TraceHolder on every line of a stack trace in which some line matched --grep, so
+	// the filter admits the whole trace.
+	MatchedGrep bool
+	// EndsTrace is true on the line that closes a Python traceback (its exception line). Traces of other
+	// languages have no closing line.
+	EndsTrace bool
 }
 
 // Text returns the text representation of the entry.
@@ -44,11 +48,10 @@ func (e *Entry) Text() string {
 
 // StreamRecord tracks active state for an ongoing record on a specific (PID, FD) stream.
 type streamRecord struct {
-	level       Severity
-	inTrace     bool
-	isDotNet    bool
-	isGoDump    bool
-	matchedGrep bool
+	level    Severity
+	inTrace  bool
+	isDotNet bool
+	isGoDump bool
 }
 
 // StackTraceGrouper operates as a real-time, zero-buffering record and continuation state machine.
@@ -201,8 +204,8 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 	go func() {
 		defer close(out)
 
+		// Only this goroutine touches records, so it needs no lock
 		records := make(map[streamKey]*streamRecord)
-		var mu sync.Mutex
 
 		sendEntry := func(e Entry) bool {
 			select {
@@ -224,7 +227,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 				}
 
 				key := streamKey{pid: line.PID, fd: line.FD}
-				mu.Lock()
 				rec := records[key]
 
 				now := line.TS
@@ -249,7 +251,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						Raw:       rawText,
 						Safe:      safeText,
 					}
-					mu.Unlock()
 					if !sendEntry(partialEntry) {
 						return
 					}
@@ -271,12 +272,12 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						TS:                   now,
 						Raw:                  rawText,
 						Safe:                 safeText,
-						MatchedGrep:          rec.matchedGrep,
 					}
 
 					// If trailing Python exception closes trace
 					if pythonTrailerRegex.MatchString(cleanText) && !pythonTraceHeaderRegex.MatchString(cleanText) {
 						rec.inTrace = false
+						entry.EndsTrace = true
 					}
 					// If .NET 2-line record completed
 					if rec.isDotNet {
@@ -284,7 +285,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						records[key] = nil
 					}
 
-					mu.Unlock()
 					if !sendEntry(entry) {
 						return
 					}
@@ -317,7 +317,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						Raw:                  rawText,
 						Safe:                 safeText,
 					}
-					mu.Unlock()
 					if !sendEntry(entry) {
 						return
 					}
@@ -326,7 +325,6 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 
 				// Unclassified plain text (resets active record state)
 				records[key] = nil
-				mu.Unlock()
 
 				plainEntry := Entry{
 					Lines:                []string{safeText},

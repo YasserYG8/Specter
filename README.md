@@ -149,7 +149,7 @@ specter 18492
 | Flag | Shorthand | Description |
 | :--- | :--- | :--- |
 | `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. |
-| `--grep <pattern>` | `-g` | Filter output by text or regular expression. Preserves grouped stack traces. |
+| `--grep <pattern>` | `-g` | Filter output by text or regular expression. A stack trace is shown whole when any of its lines matches, and not at all otherwise. To do this Specter holds a trace until it ends (up to 200 ms after its last line), so lines of other processes may appear before it. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |
 | `--tree` | `-t` | Also trace deeper descendants of the target (up to 3 levels). Direct child workers are always traced. |
 | `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |

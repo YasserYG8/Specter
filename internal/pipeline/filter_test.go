@@ -58,6 +58,46 @@ func TestFilter_GrepMultiLineAtomic(t *testing.T) {
 	}
 }
 
+func TestFilter_MatchedGrepAdmitsWholeTrace(t *testing.T) {
+	t.Run("lines marked by the holder pass without matching themselves", func(t *testing.T) {
+		filter := NewFilter(FilterOptions{Grep: "ZeroDivision"})
+		header := &Entry{Lines: []string{"Traceback (most recent call last):"}, FD: 2, PID: 5, IsTrace: true, MatchedGrep: true}
+		frame := &Entry{Lines: []string{`  File "/app/x.py", line 1`}, FD: 2, PID: 5, IsTrace: true, IsFrame: true, MatchedGrep: true}
+		if !filter.Matches(header) || !filter.Matches(frame) {
+			t.Error("expected both lines of a matching trace to be admitted")
+		}
+	})
+
+	t.Run("later lines of the record inherit the match", func(t *testing.T) {
+		filter := NewFilter(FilterOptions{Grep: "ZeroDivision"})
+		filter.Matches(&Entry{Lines: []string{"Error: boom"}, FD: 2, PID: 5, IsTrace: true, MatchedGrep: true})
+		later := &Entry{Lines: []string{"    at later (/app/f.js:9:1)"}, FD: 2, PID: 5, IsTrace: true, IsFrame: true}
+		if !filter.Matches(later) {
+			t.Error("expected a frame after the held lines to inherit the match")
+		}
+	})
+
+	t.Run("the mark does not reach other streams", func(t *testing.T) {
+		filter := NewFilter(FilterOptions{Grep: "ZeroDivision"})
+		filter.Matches(&Entry{Lines: []string{"Error: boom"}, FD: 2, PID: 5, IsTrace: true, MatchedGrep: true})
+		other := &Entry{Lines: []string{"    at x (/app/f.js:9:1)"}, FD: 2, PID: 6, IsTrace: true, IsFrame: true}
+		if filter.Matches(other) {
+			t.Error("expected a frame of another process to stay filtered out")
+		}
+	})
+
+	t.Run("stderr and level checks still come first", func(t *testing.T) {
+		stderrOnly := NewFilter(FilterOptions{Grep: "x", OnlyStderr: true})
+		if stderrOnly.Matches(&Entry{Lines: []string{"a"}, FD: 1, PID: 5, MatchedGrep: true}) {
+			t.Error("expected --stderr to drop a stdout line even when marked")
+		}
+		leveled := NewFilter(FilterOptions{Grep: "x", MinLevel: SeverityError})
+		if leveled.Matches(&Entry{Lines: []string{"a"}, FD: 1, PID: 5, Level: SeverityInfo, MatchedGrep: true}) {
+			t.Error("expected --level to drop an info line even when marked")
+		}
+	})
+}
+
 func TestFilter_OnlyStderr(t *testing.T) {
 	filter := NewFilter(FilterOptions{OnlyStderr: true})
 
