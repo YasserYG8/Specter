@@ -5,6 +5,13 @@ import (
 	"strings"
 )
 
+// The level words the positional rules accept.
+const logLevels = `ERROR|FATAL|CRIT|CRITICAL|PANIC|WARN|WARNING|INFO|DEBUG|TRACE`
+
+// logTimestamp is the date and time most loggers print: 2026-11-07 10:12:50, with a space or T between them, an
+// optional fraction after a comma (Python's default asctime) or a dot, and an optional zone.
+const logTimestamp = `\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?`
+
 // Precompiled regexes for terminal safety, severity, HTTP logs, and stack trace geometry.
 // All regular expressions are designed with linear execution characteristics (no nested quantifiers).
 var (
@@ -26,7 +33,15 @@ var (
 	monologLevelRegex   = regexp.MustCompile(`\b[a-zA-Z0-9_\-.]+\.(ERROR|CRITICAL|ALERT|EMERGENCY|WARNING|WARN|NOTICE|INFO|DEBUG):`)
 	columnarLevelRegex  = regexp.MustCompile(`\|\s*(ERROR|FATAL|CRIT|CRITICAL|PANIC|WARN|WARNING|INFO|DEBUG|TRACE)\s*\|`)
 	dotnetLevelRegex    = regexp.MustCompile(`^(fail|crit|warn|info|dbug|trce):\s+[a-zA-Z0-9_.]+(?:\[\d+\])?`)
-	positionalWordRegex = regexp.MustCompile(`^(?:\[[^\]]+\]\s+)?(?:[0-9T:.\-+Z]{10,35}\s+)?(?:\[[^\]]+\]\s+)?(ERROR|FATAL|CRIT|CRITICAL|PANIC|WARN|WARNING|INFO|DEBUG|TRACE)\b`)
+	positionalWordRegex = regexp.MustCompile(`^(?:\[[^\]]+\]\s+)?(?:(?:` + logTimestamp + `|[0-9T:.\-+Z]{10,35})\s+)?(?:\[[^\]]+\]\s+)?(` + logLevels + `)\b`)
+
+	// Python formats whose level is not right after the timestamp. Both are anchored at the start of the line, so
+	// a level word inside a message is never taken.
+	//   logging cookbook: 2026-11-07 10:12:50,516 - TajweedPipeline - INFO - Starting
+	//   Celery worker:    [2026-11-07 10:12:50,516: ERROR/ForkPoolWorker-1] Task ... raised
+	// The logger name is matched lazily, so the first " - LEVEL - " is the level and a later one in the message is not.
+	cookbookLevelRegex = regexp.MustCompile(`^` + logTimestamp + ` - [^ ]+(?: [^ ]+)*? - (` + logLevels + `) - `)
+	celeryLevelRegex   = regexp.MustCompile(`^\[` + logTimestamp + `: (` + logLevels + `)/[^\]]+\]`)
 
 	// HTTP Access Log Regexes (Rank 3: Medium Confidence)
 	// 1. Quoted request line: "GET /path HTTP/1.1" 200

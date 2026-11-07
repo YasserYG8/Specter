@@ -109,7 +109,7 @@ func isRecordStart(clean string) (bool, Severity, bool, bool) {
 	}
 
 	// 6. Positional word after timestamp
-	if positionalWordRegex.MatchString(clean) {
+	if positionalWordRegex.MatchString(clean) || cookbookLevelRegex.MatchString(clean) || celeryLevelRegex.MatchString(clean) {
 		return true, DetectSeverity(clean), false, false
 	}
 

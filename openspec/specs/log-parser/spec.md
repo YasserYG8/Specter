@@ -24,6 +24,30 @@ The log parser SHALL inspect line tokens using confidence-ranked rules (Structur
 - **WHEN** a line contains numbers like "took 404 ms" or "200 users" without an HTTP method and path
 - **THEN** the parser does NOT classify the line as an HTTP log or assign a severity based on the number
 
+#### Scenario: Timestamp with a space and a comma
+- **WHEN** a line starts with `2026-11-07 10:12:50,516 WARNING [app] disk almost full` or `2026-11-07 10:12:50.516 INFO app: Starting`, with a space between date and time and a comma or dot before the fraction
+- **THEN** the parser treats the date and time as one timestamp and assigns the level of the word after it (`WARN`, `INFO`)
+
+#### Scenario: Python logging cookbook format
+- **WHEN** a line matches `<timestamp> - <logger name> - <LEVEL> - <message>`, such as `2026-11-07 10:12:50,516 - TajweedPipeline - INFO - Starting pipeline processing`
+- **THEN** the parser assigns `INFO`, and the line starts a new record
+
+#### Scenario: Celery worker format
+- **WHEN** a line starts with `[2026-11-07 10:12:50,516: ERROR/ForkPoolWorker-1]`
+- **THEN** the parser assigns `ERROR`, and the line starts a new record
+
+#### Scenario: Python level names
+- **WHEN** a recognized level token is `WARNING` or `CRITICAL`
+- **THEN** the parser assigns `WARN` or `ERROR`
+
+#### Scenario: Level words inside the message are not levels
+- **WHEN** a line is `Processing item 3 - INFO - not a level` with no timestamp before it, or `GET /api/ERROR-codes 200`
+- **THEN** the dashed `INFO` and the `ERROR` in the path are not used as the line's level
+
+#### Scenario: Formats that already work keep working
+- **WHEN** a line is `INFO:app:Starting pipeline`, `[2026-11-07 10:12:50 +0000] [1234] [INFO] Booting worker`, or `2026-11-07 10:12:50.516 | WARNING  | app.main:run:43 - disk almost full`
+- **THEN** the parser assigns `INFO`, `INFO` and `WARN`, as before
+
 ### Requirement: ANSI Escape Code Preservation and Terminal Safety
 The log parser SHALL preserve standard SGR ANSI color sequences, sanitize non-SGR terminal control sequences, and enforce a 64 KB line length limit.
 

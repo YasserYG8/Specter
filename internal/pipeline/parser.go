@@ -111,6 +111,10 @@ func DetectSeverity(line string) Severity {
 		posLevel = ParseRankedSeverity(m[1])
 	} else if m := positionalWordRegex.FindStringSubmatch(clean); len(m) > 1 {
 		posLevel = ParseRankedSeverity(m[1])
+	} else if m := cookbookLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
+	} else if m := celeryLevelRegex.FindStringSubmatch(clean); len(m) > 1 {
+		posLevel = ParseRankedSeverity(m[1])
 	}
 
 	// Rank 3: HTTP Status Code Hint (Medium Confidence)
