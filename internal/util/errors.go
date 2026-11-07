@@ -18,6 +18,10 @@ var (
 	// ErrPermissionDenied indicates process information cannot be inspected without elevated privileges.
 	ErrPermissionDenied = errors.New("permission denied")
 
+	// ErrAlreadyTraced indicates another process already traces the target. Linux allows one tracer per process,
+	// so this is different from a permission problem and must not be fixed with sudo.
+	ErrAlreadyTraced = errors.New("target is already being traced")
+
 	// ErrToolMissing indicates a required system utility (strace, lsof, ss) is not installed.
 	ErrToolMissing = errors.New("required system utility not found")
 

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/YasserYG8/Specter/internal/source"
-	"github.com/YasserYG8/Specter/internal/util"
 )
 
 // Options configures the strace source behavior.
@@ -29,8 +28,11 @@ type Source struct {
 	cmd           *exec.Cmd
 	parser        *Parser
 	capturedError string
-	exit          *ExitStatus // how the target ended, once strace has printed its exit line
-	options       Options
+	// The strace line saying that attaching to the target itself failed, for example
+	// "strace: attach: ptrace(PTRACE_SEIZE, 773): Operation not permitted"
+	targetAttachErr string
+	exit            *ExitStatus // how the target ended, once strace has printed its exit line
+	options         Options
 
 	// Notices and tests
 	notifier           func(msg string)
@@ -71,6 +73,16 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	// Verify strace is installed upfront
 	if installErr := CheckStraceInstalled(); installErr != nil {
 		errs <- installErr
+		close(chunks)
+		close(errs)
+		return chunks, errs
+	}
+
+	// Only one process can trace another. If someone else already traces the target, say so now, instead of
+	// letting strace fail with a permission error. Workers that are traced already are left out and reported.
+	target, tracedErr := s.checkTracers(target)
+	if tracedErr != nil {
+		errs <- tracedErr
 		close(chunks)
 		close(errs)
 		return chunks, errs
@@ -123,32 +135,21 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 		// Await command termination
 		waitErr := cmd.Wait()
 
-		// If exited unexpectedly without context cancellation, diagnose the error
-		if waitErr != nil && ctx.Err() == nil {
-			s.mu.Lock()
-			captured := s.capturedError
-			s.mu.Unlock()
+		// If exited unexpectedly without context cancellation, diagnose the error. Failing to attach to the
+		// target itself counts too, even when strace stopped cleanly, because Specter then has nothing to follow.
+		s.mu.Lock()
+		captured := s.capturedError
+		attachErr := s.targetAttachErr
+		s.mu.Unlock()
+		if attachErr != "" {
+			captured = attachErr
+		}
 
-			if strings.Contains(captured, "Operation not permitted") {
-				errs <- &util.DiagnosticError{
-					Err:         util.ErrPtraceDenied,
-					Title:       fmt.Sprintf("Cannot attach to PID %d: Operation not permitted", target.PID),
-					Explanation: "The kernel blocked ptrace attachment. Process may belong to another user or ptrace is restricted.",
-					Remediation: fmt.Sprintf("Run Specter with sudo: sudo specter --pid %d (or setcap cap_sys_ptrace+ep on strace)", target.PID),
-				}
+		if (waitErr != nil || attachErr != "") && ctx.Err() == nil {
+			if err := s.diagnoseAttach(captured, target); err != nil {
+				errs <- err
 				return
 			}
-
-			if strings.Contains(captured, "No such process") {
-				errs <- fmt.Errorf("%w: PID %d exited or does not exist", util.ErrProcessNotFound, target.PID)
-				return
-			}
-
-			if captured != "" {
-				errs <- fmt.Errorf("strace error: %s", captured)
-				return
-			}
-
 			errs <- fmt.Errorf("strace exited unexpectedly: %w", waitErr)
 		}
 	}()
@@ -176,7 +177,17 @@ func (s *Source) readLoop(ctx context.Context, r io.Reader, chunks chan<- source
 		if strings.HasPrefix(line, "strace: ") || strings.Contains(line, "attach:") {
 			s.mu.Lock()
 			s.capturedError = line
+			var stop *exec.Cmd
+			// With several -p arguments strace keeps running when only some attaches fail. If the target is the
+			// one that failed, there is nothing to follow, so stop strace and report why.
+			if s.targetAttachErr == "" && failedAttachTo(line, s.parser.defaultPID) {
+				s.targetAttachErr = line
+				stop = s.cmd
+			}
 			s.mu.Unlock()
+			if stop != nil && stop.Process != nil {
+				_ = stop.Process.Signal(os.Interrupt)
+			}
 			return true
 		}
 

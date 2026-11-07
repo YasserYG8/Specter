@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,5 +112,67 @@ func TestE2E_EmptyPortNeverAttachesToThePID(t *testing.T) {
 		if strings.HasPrefix(line, "TracerPid:") && strings.TrimSpace(strings.TrimPrefix(line, "TracerPid:")) != "0" {
 			t.Errorf("the process has a tracer attached: %s", line)
 		}
+	}
+}
+
+// Linux allows one tracer per process. A second Specter on a target that another Specter already traces must say
+// so, name the first one, exit with status 1, and leave the first capture working.
+func TestE2E_SecondSpecterExplainsAlreadyTraced(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/YasserYG8/Specter/test/e2e/testserver", "testserver")
+
+	srv, cleanupServer := startTestServer(t, serverBin)
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// The first Specter attaches and captures
+	stdout, _, stop := attachSpecter(t, ctx, specterBin, srv)
+	defer stop()
+
+	// The second one asks for the same process
+	second := specterCommand(ctx, specterBin, "--pid", strconv.Itoa(srv.PID), "--no-color")
+	var secondOut, secondErr safeBuffer
+	second.Stdout = &secondOut
+	second.Stderr = &secondErr
+	err := second.Run()
+
+	text := secondErr.String()
+	if code := second.ProcessState.ExitCode(); err == nil || code != 1 {
+		t.Errorf("expected exit status 1, got %d (%v).\nStderr:\n%s", code, err, text)
+	}
+	if want := fmt.Sprintf("PID %d is already being traced by PID", srv.PID); !strings.Contains(text, want) {
+		t.Errorf("expected %q.\nStderr:\n%s", want, text)
+	}
+	if !strings.Contains(text, "(strace") {
+		t.Errorf("expected the tracer's command to be named.\nStderr:\n%s", text)
+	}
+	if !regexp.MustCompile(`started by specter\S* \(PID \d+\)`).MatchString(text) {
+		t.Errorf("expected the first Specter to be named.\nStderr:\n%s", text)
+	}
+	if !strings.Contains(text, "only one tracer per process") || !strings.Contains(text, "Ctrl+C") {
+		t.Errorf("expected the explanation and the way out.\nStderr:\n%s", text)
+	}
+	if strings.Contains(text, "sudo") || strings.Contains(text, "Operation not permitted") {
+		t.Errorf("must not give permission advice for an already traced process.\nStderr:\n%s", text)
+	}
+	if strings.Contains(text, "Detached") {
+		t.Errorf("the second Specter never attached, so it must not say it detached.\nStderr:\n%s", text)
+	}
+
+	// The first capture still works
+	url := fmt.Sprintf("http://127.0.0.1:%d/json?msg=still-capturing", srv.Port)
+	found := waitForCondition(t, 30*time.Second, func() bool {
+		if resp, err := http.Get(url); err == nil {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(150 * time.Millisecond)
+		return strings.Contains(stdout.String(), "still-capturing")
+	})
+	if !found {
+		t.Errorf("the first Specter stopped capturing after the second one failed.\nStdout:\n%s", stdout.String())
 	}
 }

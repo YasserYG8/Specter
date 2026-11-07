@@ -200,3 +200,76 @@ Before attaching with strace, the system SHALL warn when Yama `ptrace_scope` may
 #### Scenario: Root at scope 3
 - **WHEN** root runs Specter and `ptrace_scope` is 3
 - **THEN** Specter prints the `ptrace_scope = 3` warning
+
+### Requirement: Output Through Reopened Descriptors
+A write to a descriptor other than 1 and 2 SHALL be output when its `-y` destination equals the destination of the target's fd 1 or fd 2, except when that destination is `/dev/null`. Such a write SHALL keep its real descriptor number, so that line assembly keeps it apart from fd 1 and fd 2, and it SHALL count as stdout for filtering. A write to a descriptor other than 1 and 2 without a destination, or with any other destination, SHALL NOT be output. The same rule SHALL apply to `writev` and to calls split into unfinished and resumed entries, and the rules for processes other than the target SHALL apply unchanged.
+
+#### Scenario: Node.js writes through a reopened terminal
+- **WHEN** the target's fd 1 and fd 2 point to `/dev/pts/1` and strace prints `[pid 1306] write(22</dev/pts/1>, " GET /en/graphs 200 in 628ms\n", 29) = 29`
+- **THEN** Specter outputs the line `GET /en/graphs 200 in 628ms`
+
+#### Scenario: Reopened pipe
+- **WHEN** the target's fd 1 points to `pipe:[4021]` and the target writes a line to fd 9, whose destination is `pipe:[4021]`
+- **THEN** Specter outputs the line
+
+#### Scenario: Reopened descriptor kept apart from fd 1
+- **WHEN** the target writes `hel` to fd 1 and `abc\n` to fd 22, both leading to `/dev/pts/1`, then `lo\n` to fd 1
+- **THEN** Specter outputs the lines `abc` and `hello`, not a mix of the two
+
+#### Scenario: Reopened descriptor and --stderr
+- **WHEN** `--stderr` is set and the target writes a line to fd 22, whose destination is the target's stderr terminal
+- **THEN** the line is not output, because writes through other descriptors count as stdout
+
+#### Scenario: Unfinished write through a reopened descriptor
+- **WHEN** strace prints `[pid 101] write(22</dev/pts/1>, "\x61\x0a", 2 <unfinished ...>` and later `[pid 101] <... write resumed>) = 2`, and the target's stdout is `/dev/pts/1`
+- **THEN** Specter outputs the line `a`
+
+#### Scenario: Other descriptor to /dev/null
+- **WHEN** the target's fd 1 points to `/dev/null` and the target writes to fd 7, whose destination is `/dev/null`
+- **THEN** the write is not output
+
+#### Scenario: Other descriptor to a different destination
+- **WHEN** the target's stdout is `/dev/pts/1` and the target writes to fd 5, whose destination is `socket:[51769]`
+- **THEN** the write is not output
+
+#### Scenario: Other descriptor without a destination
+- **WHEN** strace prints a write to fd 22 without a `<...>` annotation
+- **THEN** the write is not output
+
+#### Scenario: Log file notice still works
+- **WHEN** the target writes to fd 8, whose destination is the regular file `/var/log/app.log`, and that file is not the target's stdout or stderr
+- **THEN** the write is not output and the "writes to its own log file" notice is printed once
+
+### Requirement: Already Traced Target
+Before starting strace, the system SHALL read `TracerPid` from `/proc/<pid>/status` for the target. When it is not 0, the system SHALL NOT start strace, and SHALL exit with a non-zero status and a diagnostic that names the target PID, the tracer PID and the tracer's command. When the tracer's parent process is named `specter`, the diagnostic SHALL also name that Specter's PID. The diagnostic SHALL say that Linux allows one tracer per process and that the other tracer must stop first, and SHALL NOT recommend `sudo`. The system SHALL NOT signal the tracer.
+
+#### Scenario: Target traced by another Specter
+- **WHEN** the target PID 773 has `TracerPid: 844`, PID 844 is `strace -f ... -p 773`, and its parent PID 825 is `specter`
+- **THEN** Specter prints a diagnostic saying PID 773 is already traced by PID 844 (strace), started by specter PID 825, that only one tracer is allowed per process, and to stop the other Specter first, and exits with a non-zero status without starting strace
+
+#### Scenario: Target traced by a debugger
+- **WHEN** the target has `TracerPid: 900` and PID 900 is `gdb -p 773`
+- **THEN** the diagnostic names PID 900 and `gdb`, without mentioning Specter
+
+#### Scenario: Target not traced
+- **WHEN** the target has `TracerPid: 0`
+- **THEN** Specter starts strace as usual
+
+#### Scenario: Tracer details unreadable
+- **WHEN** the target's `TracerPid` is 844 and `/proc/844/cmdline` cannot be read
+- **THEN** the diagnostic still names PID 844 and says the target is already traced
+
+#### Scenario: Tracer appears after the check
+- **WHEN** the target was not traced at the check, and strace then fails with "Operation not permitted" while `TracerPid` is now 844
+- **THEN** Specter shows the "already traced" diagnostic instead of the permission diagnostic, and exits with a non-zero status
+
+#### Scenario: Permission problem without a tracer
+- **WHEN** strace fails with "Operation not permitted" and the target's `TracerPid` is 0
+- **THEN** Specter shows the existing permission diagnostic
+
+### Requirement: Already Traced Workers
+The system SHALL leave discovered workers whose `TracerPid` is not 0 out of strace's `-p` arguments, and SHALL print one notice on stderr that lists them with their tracer PIDs and says their output is not captured.
+
+#### Scenario: One worker already traced
+- **WHEN** the target has workers 1019 and 1039, and worker 1039 has `TracerPid: 1500`
+- **THEN** strace is started with `-p` for the target and 1019 only, and Specter prints a notice that worker 1039 is already traced by PID 1500 and its output is not captured
