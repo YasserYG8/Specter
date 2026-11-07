@@ -372,3 +372,45 @@ func TestCapCapturedLine(t *testing.T) {
 		t.Errorf("expected the capped text then the marker, got %d bytes ending %q", len(got), got[len(got)-60:])
 	}
 }
+
+// Node.js in a terminal writes through a reopened descriptor (fd 22 here) next to fd 1. The assembler keys its
+// buffers on (PID, fd), so a half line on fd 1 and a whole line on fd 22 must not be glued together.
+func TestPipeline_ReopenedDescriptorStaysApartFromFd1(t *testing.T) {
+	run := func(t *testing.T, opts FilterOptions) []string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		chunks := make(chan source.Chunk, 8)
+		lines := NewLineAssembler(100*time.Millisecond).Assemble(ctx, chunks)
+		entries := NewStackTraceGrouper(100*time.Millisecond).Group(ctx, lines)
+		filter := NewFilter(opts)
+
+		now := time.Now()
+		chunks <- source.Chunk{Bytes: []byte("hel"), FD: 1, PID: 10, TS: now}
+		chunks <- source.Chunk{Bytes: []byte("abc\n"), FD: 22, PID: 10, TS: now}
+		chunks <- source.Chunk{Bytes: []byte("lo\n"), FD: 1, PID: 10, TS: now}
+		close(chunks)
+
+		var out []string
+		for entry := range entries {
+			if filter.Matches(&entry) {
+				out = append(out, entry.Text())
+			}
+		}
+		return out
+	}
+
+	t.Run("lines are not mixed", func(t *testing.T) {
+		got := run(t, FilterOptions{})
+		if len(got) != 2 || got[0] != "abc" || got[1] != "hello" {
+			t.Errorf("want [abc hello], got %q", got)
+		}
+	})
+
+	t.Run("--stderr hides it, because other descriptors count as stdout", func(t *testing.T) {
+		if got := run(t, FilterOptions{OnlyStderr: true}); len(got) != 0 {
+			t.Errorf("--stderr should show nothing from fd 1 and fd 22, got %q", got)
+		}
+	})
+}

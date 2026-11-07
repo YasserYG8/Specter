@@ -169,6 +169,7 @@ func (s *Source) readLoop(ctx context.Context, r io.Reader, chunks chan<- source
 		limit = maxStraceLine
 	}
 	s.parser.OnOtherFD = s.checkOtherFD
+	s.parser.IsOutputDest = s.isOutputDest
 
 	scanLines(r, limit, func(line string) bool {
 		// Capture strace diagnostic messages or errors
@@ -289,6 +290,17 @@ func (s *Source) procAccess() (string, func(string) (string, error)) {
 		readlink = os.Readlink
 	}
 	return root, readlink
+}
+
+// isOutputDest reports whether a write to a descriptor other than 1 and 2 reaches the target's own output,
+// because the descriptor leads to the same terminal, pipe or socket as the target's stdout or stderr. Node.js
+// reopens its terminal and writes through the new descriptor, so its lines only show up this way.
+// /dev/null is left out: another descriptor pointing there is usually a library discarding data on purpose.
+func (s *Source) isOutputDest(dest string) bool {
+	if dest == "" || dest == "/dev/null" {
+		return false
+	}
+	return dest == s.refs[0] || dest == s.refs[1]
 }
 
 // shouldEmit decides whether a write to fd 1 or 2 is output. The target's own writes always are, even when its

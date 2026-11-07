@@ -464,3 +464,87 @@ func TestExitStatus_LoneTargetWithoutPrefix(t *testing.T) {
 		t.Fatalf("expected PID 617 exit code 3, got %+v, %v", st, ok)
 	}
 }
+
+func TestIsOutputDest(t *testing.T) {
+	cases := []struct {
+		name string
+		refs streamRefs
+		dest string
+		want bool
+	}{
+		{"terminal shared by stdout and stderr", streamRefs{"/dev/pts/1", "/dev/pts/1"}, "/dev/pts/1", true},
+		{"pipe of stdout", streamRefs{"pipe:[100]", "pipe:[101]"}, "pipe:[100]", true},
+		{"pipe of stderr", streamRefs{"pipe:[100]", "pipe:[101]"}, "pipe:[101]", true},
+		{"socket", streamRefs{"socket:[7]", "socket:[8]"}, "socket:[8]", true},
+		{"a different socket", streamRefs{"/dev/pts/1", "/dev/pts/1"}, "socket:[51769]", false},
+		{"a different terminal", streamRefs{"/dev/pts/1", "/dev/pts/1"}, "/dev/pts/2", false},
+		{"/dev/null even when the target's stdout is /dev/null", streamRefs{"/dev/null", "/dev/null"}, "/dev/null", false},
+		{"/dev/null when stdout is a terminal", streamRefs{"/dev/pts/1", "/dev/pts/1"}, "/dev/null", false},
+		{"empty destination", streamRefs{"/dev/pts/1", "/dev/pts/1"}, "", false},
+		{"references unreadable", streamRefs{}, "/dev/pts/1", false},
+		{"empty destination with unreadable references", streamRefs{}, "", false},
+		{"only stderr readable", streamRefs{"", "/dev/pts/1"}, "/dev/pts/1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSource()
+			s.refs = tc.refs
+			if got := s.isOutputDest(tc.dest); got != tc.want {
+				t.Errorf("isOutputDest(%q) with refs %v = %v, want %v", tc.dest, tc.refs, got, tc.want)
+			}
+		})
+	}
+}
+
+// Through the read loop, a reopened descriptor of the target is output, and a log file is still only a notice.
+func TestReadLoop_ReopenedDescriptors(t *testing.T) {
+	terminal := hexEncode("/dev/pts/1")
+
+	t.Run("terminal", func(t *testing.T) {
+		s := NewSource()
+		s.targetPID = 1
+		s.refs = streamRefs{"/dev/pts/1", "/dev/pts/1"}
+		line := `[pid 1] write(22<` + terminal + `>, "` + hexEncode("GET /a 200\n") + `", 11) = 11` + "\n"
+		chunks := runReadLoop(t, s, line)
+		if len(chunks) != 1 || chunks[0].FD != 22 || string(chunks[0].Bytes) != "GET /a 200\n" {
+			t.Fatalf("expected the line on fd 22, got %+v", chunks)
+		}
+	})
+
+	t.Run("a reopened descriptor of another process still needs the same destination", func(t *testing.T) {
+		s := NewSource()
+		s.targetPID = 1
+		s.refs = streamRefs{"/dev/pts/1", "/dev/pts/1"}
+		// Process 7 writes through fd 22 to the target's terminal: it reaches the user's screen
+		line := `[pid 7] write(22<` + terminal + `>, "` + hexEncode("from a child\n") + `", 13) = 13` + "\n"
+		chunks := runReadLoop(t, s, line)
+		if len(chunks) != 1 || string(chunks[0].Bytes) != "from a child\n" {
+			t.Fatalf("expected the child's line, got %+v", chunks)
+		}
+	})
+
+	t.Run("a log file is still only a notice", func(t *testing.T) {
+		s, notices := logNoticeSource(
+			map[string]string{"/fakeproc/1/fd/8": "/var/log/app.log"},
+			map[string]bool{"/var/log/app.log": true},
+		)
+		s.targetPID = 1
+		s.refs = streamRefs{"/dev/pts/1", "/dev/pts/1"}
+		line := `[pid 1] write(8<` + hexEncode("/var/log/app.log") + `>, "` + hexEncode("x\n") + `", 2) = 2` + "\n"
+		chunks := runReadLoop(t, s, line)
+		if len(chunks) != 0 {
+			t.Errorf("a log file must not be output, got %+v", chunks)
+		}
+		if len(*notices) != 1 || !strings.Contains((*notices)[0], "/var/log/app.log") {
+			t.Errorf("expected the log file notice, got %v", *notices)
+		}
+	})
+
+	t.Run("unreadable references leave other descriptors ignored", func(t *testing.T) {
+		s := NewSource()
+		line := `[pid 1] write(22<` + terminal + `>, "` + hexEncode("x\n") + `", 2) = 2` + "\n"
+		if chunks := runReadLoop(t, s, line); len(chunks) != 0 {
+			t.Errorf("expected nothing, got %+v", chunks)
+		}
+	})
+}

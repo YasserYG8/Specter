@@ -1,6 +1,7 @@
 package strace
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -490,4 +491,114 @@ func TestParser_ParseExit(t *testing.T) {
 	if st, _ := NewParser(1).ParseExit(`+++ exited with 9 +++`); st.Killed() {
 		t.Error("an exit code is not a kill")
 	}
+}
+
+// hexEncode writes text the way strace -xx does: every byte as \xNN.
+func hexEncode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		fmt.Fprintf(&b, `\x%02x`, s[i])
+	}
+	return b.String()
+}
+
+// Node.js (libuv) opens the terminal again and writes through the new descriptor. This is the shape of the line
+// captured from a Next.js 16 dev server run in a terminal in WSL, where fd 1 and fd 2 also point to /dev/pts/1.
+func TestParser_ReopenedTerminalDescriptor(t *testing.T) {
+	now := time.Now()
+	terminal := hexEncode("/dev/pts/1")
+	const text = " GET /en/graphs 200 in 628ms (next.js: 255ms)\n"
+	isTerminal := func(dest string) bool { return dest == "/dev/pts/1" }
+
+	newParser := func() (*Parser, *[][2]int) {
+		p := NewParser(1306)
+		p.IsOutputDest = isTerminal
+		var others [][2]int
+		p.OnOtherFD = func(pid, fd int) { others = append(others, [2]int{pid, fd}) }
+		return p, &others
+	}
+
+	t.Run("write through fd 22", func(t *testing.T) {
+		p, others := newParser()
+		line := fmt.Sprintf(`[pid 1306] write(22<%s>, "%s", %d) = %d`, terminal, hexEncode(text), len(text), len(text))
+		c, dest, err := p.ParseLineDest(line, now)
+		if err != nil || c == nil {
+			t.Fatalf("expected a chunk, got %+v, %v", c, err)
+		}
+		if c.FD != 22 || c.PID != 1306 || string(c.Bytes) != text {
+			t.Errorf("got FD=%d PID=%d %q; want the real descriptor 22, PID 1306 and the text", c.FD, c.PID, c.Bytes)
+		}
+		if dest != "/dev/pts/1" {
+			t.Errorf("destination = %q, want /dev/pts/1", dest)
+		}
+		if len(*others) != 0 {
+			t.Errorf("output must not be reported as another descriptor: %v", *others)
+		}
+	})
+
+	t.Run("writev through fd 22", func(t *testing.T) {
+		p, _ := newParser()
+		line := fmt.Sprintf(`[pid 1306] writev(22<%s>, [{iov_base="%s", iov_len=2}, {iov_base="%s", iov_len=1}], 2) = 3`,
+			terminal, hexEncode("hi"), hexEncode("\n"))
+		c, _, err := p.ParseLineDest(line, now)
+		if err != nil || c == nil || c.FD != 22 || string(c.Bytes) != "hi\n" {
+			t.Fatalf("expected %q on fd 22, got %+v, %v", "hi\n", c, err)
+		}
+	})
+
+	t.Run("unfinished and resumed write through fd 22", func(t *testing.T) {
+		p, _ := newParser()
+		start := fmt.Sprintf(`[pid 101] write(22<%s>, "%s", 2 <unfinished ...>`, terminal, hexEncode("a\n"))
+		if c, _, err := p.ParseLineDest(start, now); err != nil || c != nil {
+			t.Fatalf("the unfinished entry should wait, got %+v, %v", c, err)
+		}
+		c, dest, err := p.ParseLineDest(`[pid 101] <... write resumed>)              = 2`, now)
+		if err != nil || c == nil || c.FD != 22 || string(c.Bytes) != "a\n" || dest != "/dev/pts/1" {
+			t.Fatalf("expected %q on fd 22 with destination /dev/pts/1, got %+v %q %v", "a\n", c, dest, err)
+		}
+	})
+
+	t.Run("fd 22 with another destination", func(t *testing.T) {
+		p, others := newParser()
+		line := fmt.Sprintf(`[pid 1306] write(22<%s>, "%s", 2) = 2`, hexEncode("socket:[51769]"), hexEncode("x\n"))
+		if c, _, _ := p.ParseLineDest(line, now); c != nil {
+			t.Errorf("a write to somewhere else must not be output, got %+v", c)
+		}
+		if len(*others) != 1 || (*others)[0] != [2]int{1306, 22} {
+			t.Errorf("expected the write to be reported as another descriptor, got %v", *others)
+		}
+	})
+
+	t.Run("fd 22 without an annotation", func(t *testing.T) {
+		p, others := newParser()
+		asked := false
+		p.IsOutputDest = func(string) bool { asked = true; return true }
+		line := fmt.Sprintf(`[pid 1306] write(22, "%s", 2) = 2`, hexEncode("x\n"))
+		if c, _, _ := p.ParseLineDest(line, now); c != nil {
+			t.Errorf("a write without a destination must not be output, got %+v", c)
+		}
+		if asked {
+			t.Error("the destination callback must not be asked about an empty destination")
+		}
+		if len(*others) != 1 {
+			t.Errorf("expected the write to be reported as another descriptor, got %v", *others)
+		}
+	})
+
+	t.Run("without a callback it behaves as before", func(t *testing.T) {
+		p := NewParser(1306)
+		line := fmt.Sprintf(`[pid 1306] write(22<%s>, "%s", 2) = 2`, terminal, hexEncode("x\n"))
+		if c, _, _ := p.ParseLineDest(line, now); c != nil {
+			t.Errorf("expected no chunk without IsOutputDest, got %+v", c)
+		}
+	})
+
+	t.Run("fd 1 and fd 2 are not affected", func(t *testing.T) {
+		p := NewParser(1306)
+		p.IsOutputDest = func(string) bool { t.Error("must not be asked about fd 1"); return false }
+		line := fmt.Sprintf(`[pid 1306] write(1<%s>, "%s", 2) = 2`, terminal, hexEncode("x\n"))
+		if c, _, _ := p.ParseLineDest(line, now); c == nil || c.FD != 1 {
+			t.Errorf("expected a chunk on fd 1, got %+v", c)
+		}
+	})
 }

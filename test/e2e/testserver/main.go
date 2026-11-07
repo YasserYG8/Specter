@@ -228,6 +228,27 @@ func main() {
 		fmt.Fprintf(w, "Wrote a line of %d bytes\n", size)
 	})
 
+	// 5c2. Numbered lines written through a descriptor that is opened again from /proc/self/fd/1. Node.js (libuv)
+	// does this for a terminal, and its output then goes through fd 22 or similar instead of fd 1.
+	mux.HandleFunc("/reopen", func(w http.ResponseWriter, r *http.Request) {
+		lines, _ := strconv.Atoi(r.URL.Query().Get("lines"))
+		if lines <= 0 {
+			lines = 20
+		}
+		f, err := os.OpenFile("/proc/self/fd/1", os.O_WRONLY, 0)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer f.Close()
+		for i := 0; i < lines; i++ {
+			fmt.Fprintf(f, "reopened-%d\n", i)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "wrote %d lines through descriptor %d\n", lines, f.Fd())
+	})
+
 	// 5d. A log line written with writev(2) instead of write(2)
 	mux.HandleFunc("/writev", func(w http.ResponseWriter, r *http.Request) {
 		msg := r.URL.Query().Get("msg")

@@ -115,7 +115,7 @@ specter [port | pid | container | project] (or interactive picker)
    - **Docker Container** (checked first): Streams through the `docker` CLI (`docker logs`).
    - **Systemd Service**: Streams via `journalctl` if governed by systemd.
    - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
-   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes. A child process is shown only when its output goes to the same place as the server's own stdout or stderr. Helpers that write to a private pipe or to `/dev/null` (for example the tools a Next.js dev server starts) are not shown, because their lines never reach your terminal either.
+   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes. A child process is shown only when its output goes to the same place as the server's own stdout or stderr. Helpers that write to a private pipe or to `/dev/null` (for example the tools a Next.js dev server starts) are not shown, because their lines never reach your terminal either. Node.js servers started in a terminal (`npm run dev`, Next.js, Express, Vite) write through a descriptor that Node opened again from the terminal, such as fd 22, so Specter also follows any other descriptor that leads to the same terminal, pipe or socket as the server's stdout or stderr.
 3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
 4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 
@@ -162,7 +162,7 @@ A number above 65535 cannot be a port, so `specter 70000` attaches to PID 70000.
 | `--pid <pid>` | `-p` | Attach to the process with this PID, whatever its value. It is never checked as a port. Give one PID, and not together with a port, container or project. |
 | `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. |
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. A stack trace is shown whole when any of its lines matches, and not at all otherwise. To do this Specter holds a trace until it ends (up to 200 ms after its last line), so lines of other processes may appear before it. |
-| `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |
+| `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. Limit: when a Node.js server runs in a terminal, its output goes through reopened descriptors, and when stdout and stderr are the same terminal Specter cannot tell which one a line came from. Those lines count as stdout, so `--stderr` hides them. Redirecting the server's stderr separately (for example `2>err.log`) makes the two distinct again. |
 | `--tree` | `-t` | Also trace deeper descendants of the target (up to 3 levels). Direct child workers are always traced. |
 | `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |
 | `--json` | | Output formatted single-line JSON records. |

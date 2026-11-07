@@ -348,3 +348,39 @@ func TestE2E_NoOutputNotice(t *testing.T) {
 		}
 	})
 }
+
+// TestE2E_ReopenedDescriptorIsCaptured: Node.js servers started in a terminal write through a descriptor that
+// libuv opened again from the terminal, not through fd 1. The test server opens /proc/self/fd/1 again and writes
+// through the new descriptor, and its stdout is a pipe, so the new descriptor leads to the same pipe.
+func TestE2E_ReopenedDescriptorIsCaptured(t *testing.T) {
+	requireLinux(t)
+
+	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
+	serverBin := getBinary(t, "TESTSERVER_BIN", "github.com/YasserYG8/Specter/test/e2e/testserver", "testserver")
+
+	srv, cleanupServer := startTestServer(t, serverBin)
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	stdout, stderr, stop := attachSpecter(t, ctx, specterBin, srv)
+	defer stop()
+
+	const lines = 30
+	httpGet(t, fmt.Sprintf("http://127.0.0.1:%d/reopen?lines=%d", srv.Port, lines))
+	waitForOutputToSettle(t, stdout, 30*time.Second)
+	stop()
+
+	counts := map[string]int{}
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		counts[strings.TrimSpace(line)]++
+	}
+	for i := 0; i < lines; i++ {
+		want := fmt.Sprintf("reopened-%d", i)
+		if counts[want] != 1 {
+			t.Errorf("line %q appeared %d times, want once.\nStdout:\n%s\nStderr:\n%s", want, counts[want], stdout.String(), stderr.String())
+			return
+		}
+	}
+}

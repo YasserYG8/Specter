@@ -68,8 +68,15 @@ type Parser struct {
 	defaultPID int
 	pending    map[int]*pendingCall
 
-	// OnOtherFD, when set, is called for every write or writev to a descriptor other than 1 and 2.
+	// OnOtherFD, when set, is called for every write or writev to a descriptor other than 1 and 2 that is not
+	// output (see IsOutputDest).
 	OnOtherFD func(pid, fd int)
+
+	// IsOutputDest, when set, is asked about the destination of a write to a descriptor other than 1 and 2. When
+	// it returns true the write is parsed like one to fd 1 or 2 and keeps its real descriptor number. Node.js
+	// does this for a terminal: libuv opens the terminal again and writes through the new descriptor, such as
+	// fd 22. A write without a destination is never asked about and is never output.
+	IsOutputDest func(dest string) bool
 }
 
 // NewParser creates an strace parser.
@@ -125,7 +132,8 @@ func (p *Parser) ParseLineDest(line string, now time.Time) (*source.Chunk, strin
 	dest := decodeDest(start[3])
 	rest := line[len(start[0]):]
 
-	if fd != 1 && fd != 2 {
+	reopenedOutput := fd != 1 && fd != 2 && dest != "" && p.IsOutputDest != nil && p.IsOutputDest(dest)
+	if fd != 1 && fd != 2 && !reopenedOutput {
 		// A new call from this tracee means any earlier unfinished call has already been resumed
 		delete(p.pending, pid)
 		if p.OnOtherFD != nil {
