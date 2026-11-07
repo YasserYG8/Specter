@@ -67,7 +67,7 @@ func CheckPtracePermissions(procRoot string) error {
 			Err:         util.ErrPtraceDenied,
 			Title:       "Admin-only ptrace (yama ptrace_scope = 2)",
 			Explanation: "Only root can attach ptrace to running processes.",
-			Remediation: "Run Specter with sudo: sudo specter <port|pid>",
+			Remediation: "Run Specter with sudo: sudo specter <port>  (or: sudo specter --pid <pid>)",
 		}
 	case "3":
 		return &util.DiagnosticError{

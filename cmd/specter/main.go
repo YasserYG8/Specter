@@ -41,6 +41,7 @@ var (
 	flagSource  string
 	flagTree    bool
 	flagNoColor bool
+	flagPIDs    []int
 
 	// portDiscoveryFunc discovers active listening TCP ports for autocompletion.
 	portDiscoveryFunc = func(ctx context.Context) ([]resolver.ListeningPort, error) {
@@ -57,10 +58,12 @@ func buildVersionString() string {
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "specter [port|pid|container]",
+		Use:   "specter [port|container|project]",
 		Short: "Live stdout/stderr stream from any server by port, PID, or container",
-		Long: `Specter attaches to any active server process by listening port, PID, or container name
-and streams its stdout and stderr directly to your terminal.
+		Long: `Specter attaches to any active server process by listening port, container name, project
+name, or PID, and streams its stdout and stderr directly to your terminal.
+
+A bare number is always a port. To attach to a process by its PID, use --pid.
 
 Running 'specter' without arguments launches an interactive discovery picker.
 Zero configuration, zero wrappers, read-only.`,
@@ -75,8 +78,9 @@ Zero configuration, zero wrappers, read-only.`,
   specter phpmyadmin
   specter mysql_db
 
-  # Attach directly to a known process ID (PID)
-  specter 14280
+  # Attach directly to a known process ID (PID); a bare number is always a port
+  specter --pid 14280
+  specter -p 14280
 
   # Filter logs by minimum severity level (debug, info, warn, error)
   specter 3000 --level warn
@@ -190,11 +194,18 @@ Zero configuration, zero wrappers, read-only.`,
 				return err
 			}
 
+			// Reject --pid values that cannot be used, before anything is resolved or attached
+			if err := validatePIDFlag(flagPIDs, args); err != nil {
+				return err
+			}
+
 			// Verify Linux platform
 			if runtime.GOOS != "linux" {
 				targetRemediation := "3000"
 				if len(args) > 0 {
 					targetRemediation = args[0]
+				} else if len(flagPIDs) == 1 {
+					targetRemediation = fmt.Sprintf("--pid %d", flagPIDs[0])
 				}
 				return &util.DiagnosticError{
 					Err:         util.ErrUnsupportedPlatform,
@@ -211,7 +222,14 @@ Zero configuration, zero wrappers, read-only.`,
 			res := resolver.NewDefaultResolver(nil, "")
 			var target *source.Target
 
-			if len(args) == 0 {
+			if len(flagPIDs) == 1 {
+				// An explicit PID, whatever its value: never checked as a port
+				t, err := resolvePIDTarget(ctx, res, flagPIDs[0])
+				if err != nil {
+					return err
+				}
+				target = t
+			} else if len(args) == 0 {
 				services, err := res.DiscoverServices(ctx)
 				if err != nil {
 					return fmt.Errorf("failed to discover active services: %w", err)
@@ -270,32 +288,17 @@ Zero configuration, zero wrappers, read-only.`,
 				val, intErr := strconv.Atoi(targetArg)
 
 				if intErr == nil && val > 0 {
-					var savedPortErr error
-					if val <= 65535 {
-						t, portErr := res.ResolvePort(ctx, val)
-						if portErr == nil {
-							target = t
-						} else if !strings.Contains(portErr.Error(), util.ErrNoProcessFound.Error()) && !errors.Is(portErr, util.ErrNoProcessFound) {
-							// Surface permission or tool errors immediately
-							return portErr
-						} else {
-							savedPortErr = portErr
+					t, err := resolveNumericTarget(ctx, res, val)
+					if err != nil {
+						// The empty-port diagnostic lists the active ports, so it is printed instead of the bare error
+						var noProcErr *resolver.NoProcessOnPortError
+						if errors.As(err, &noProcErr) {
+							fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
+							cmd.SilenceErrors = true
 						}
+						return err
 					}
-
-					if target == nil {
-						t, pidErr := res.ResolvePID(ctx, val)
-						if pidErr != nil {
-							var noProcErr *resolver.NoProcessOnPortError
-							if savedPortErr != nil && errors.As(savedPortErr, &noProcErr) {
-								fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
-								cmd.SilenceErrors = true
-								return noProcErr
-							}
-							return fmt.Errorf("could not find listening port or active process for: %d (%w)", val, pidErr)
-						}
-						target = t
-					}
+					target = t
 				} else {
 					t, err := res.ResolveContainer(ctx, targetArg)
 					if err != nil {
@@ -335,7 +338,7 @@ Zero configuration, zero wrappers, read-only.`,
 							}
 						}
 						if target == nil {
-							return fmt.Errorf("argument %q is not a valid port, PID, container, or project: %w", targetArg, err)
+							return fmt.Errorf("argument %q is not a valid port, container, or project (to attach by PID, use --pid): %w", targetArg, err)
 						}
 					} else {
 						target = t
@@ -497,6 +500,19 @@ Zero configuration, zero wrappers, read-only.`,
 		},
 	}
 
+	// cobra's own message for --pid abc ("invalid argument ... strconv.ParseInt ...") does not say what to do
+	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		if msg := err.Error(); strings.Contains(msg, "--pid") || strings.Contains(msg, "'p' in -p") {
+			return &util.DiagnosticError{
+				Err:         util.ErrInvalidFlag,
+				Title:       "Invalid --pid value",
+				Explanation: "The PID must be a positive whole number.",
+				Remediation: "Find the PID with: ps aux | grep <name>    or: ss -ltnp",
+			}
+		}
+		return err
+	})
+
 	flags := cmd.Flags()
 	flags.StringVarP(&flagLevel, "level", "l", "", "minimum log level (debug, info, warn, error)")
 	flags.StringVarP(&flagGrep, "grep", "g", "", "filter output matching text or regex pattern")
@@ -505,6 +521,7 @@ Zero configuration, zero wrappers, read-only.`,
 	flags.BoolVar(&flagRaw, "raw", false, "bypass parsing and ANSI color formatting")
 	flags.StringVarP(&flagSource, "source", "s", "", "force source selection (docker, file, journal, strace)")
 	flags.BoolVarP(&flagTree, "tree", "t", false, "also trace deeper descendants of the target; direct child workers are always traced")
+	flags.IntSliceVarP(&flagPIDs, "pid", "p", nil, "attach to the process with this PID, for any PID (a bare number is always a port)")
 	flags.BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
 
 	versionCmd := &cobra.Command{

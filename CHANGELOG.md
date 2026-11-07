@@ -4,6 +4,7 @@
 
 ### Breaking
 
+- A bare number from 1 to 65535 is now a port and nothing else. It used to fall back to the process with that PID when nothing listened on the port, so `specter 3000` with your server down could attach `strace` to an unrelated process (and slow it) while only printing `Attaching to PID 3000 (systemd-journald)`. Now Specter prints "No process is listening on port 3000" with the active ports, exits with an error and attaches to nothing. If a process with that PID exists, the message ends with `Hint: PID 3000 exists (systemd-journald). To attach to it: specter --pid 3000`. To attach by PID, use the new `--pid` (`-p`) flag, for example `specter --pid 14280`. A number above 65535 cannot be a port, so `specter 70000` still attaches to PID 70000.
 - `--level` with an unknown value is now an error that lists the valid levels. It used to be ignored, so `--level banana` showed every line. Aliases such as `warning`, `err` and `fatal` still work.
 
 ### Fixed

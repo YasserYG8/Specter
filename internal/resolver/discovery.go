@@ -33,6 +33,12 @@ type NoProcessOnPortError struct {
 	RequestedPort int
 	ActivePorts   []ListeningPort
 	Suggestion    *ListeningPort
+
+	// HintPID is set when a process whose PID equals the requested port number exists. Nothing is attached to
+	// it: the diagnostic only names it and shows the command that would, so a user who meant the PID is not
+	// stuck. HintName is that process's command, and may be empty.
+	HintPID  int
+	HintName string
 }
 
 // Error implements the standard error interface.
@@ -58,6 +64,7 @@ func (e *NoProcessOnPortError) FormatDiagnostic(useColor bool) string {
 
 	if len(e.ActivePorts) == 0 {
 		sb.WriteString("No active listening TCP ports were found on this machine.\n")
+		e.writePIDHint(&sb, useColor)
 		return sb.String()
 	}
 
@@ -104,7 +111,24 @@ func (e *NoProcessOnPortError) FormatDiagnostic(useColor bool) string {
 		sb.WriteString(fmt.Sprintf("\nDid you mean: %s ?\n", suggestCmd))
 	}
 
+	e.writePIDHint(&sb, useColor)
 	return sb.String()
+}
+
+// writePIDHint adds the closing "Hint:" line when a process with the requested number as its PID exists.
+func (e *NoProcessOnPortError) writePIDHint(sb *strings.Builder, useColor bool) {
+	if e.HintPID <= 0 {
+		return
+	}
+	attachCmd := fmt.Sprintf("specter --pid %d", e.HintPID)
+	if useColor {
+		attachCmd = color.GreenString(attachCmd)
+	}
+	exists := fmt.Sprintf("PID %d exists", e.HintPID)
+	if e.HintName != "" {
+		exists = fmt.Sprintf("PID %d exists (%s)", e.HintPID, e.HintName)
+	}
+	sb.WriteString(fmt.Sprintf("\nHint: %s. To attach to it: %s\n", exists, attachCmd))
 }
 
 // DiscoverListeningPorts discovers all currently listening TCP ports using ss or lsof,

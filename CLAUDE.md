@@ -40,7 +40,7 @@ arg or picker -> resolver -> source.Target -> selector -> Source
               -> chan Chunk -> LineAssembler -> StackTraceGrouper -> Filter -> Renderer -> stdout
 ```
 
-**Argument resolution** (`main.go`): a positive integer is tried as a port first, if it is 65535 or lower, then as a PID. Port errors other than "no process found" are returned immediately. Anything else is tried as a container, then matched case-insensitively against discovered project names.
+**Argument resolution** (`main.go`): a positive integer of 65535 or lower is a port and nothing else: an empty port returns `NoProcessOnPortError` (with a `Hint:` line when a process has that PID) and never falls back to a PID. A larger integer is a PID. `--pid` / `-p` attaches by PID for any value and cannot be combined with a positional target. The numeric rules live in `cmd/specter/target.go`. Port errors other than "no process found" are returned immediately. Anything else is tried as a container, then matched case-insensitively against discovered project names.
 
 **`internal/resolver`** produces a `source.Target`. It shells out to `lsof`, `ss`, and `docker`, and reads `/proc`. External commands and the proc root are injectable (`CommandRunner`, `procRoot`), which is how tests run on Windows without those tools. `discovery.go` and `project.go` supply the data for the picker and shell completions.
 

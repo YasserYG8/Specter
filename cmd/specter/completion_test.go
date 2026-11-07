@@ -268,7 +268,7 @@ func TestCLI_HelpExamples(t *testing.T) {
 	requiredSnippets := []string{
 		"Examples:",
 		"specter 3000",
-		"specter 14280",
+		"specter --pid 14280",
 		"--level warn",
 		"--grep",
 		"--stderr",

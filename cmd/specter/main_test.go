@@ -170,7 +170,7 @@ func (b *syncBuffer) String() string {
 
 // The README's flag table promises these short forms, so a test keeps the two in step.
 func TestCLI_ShortFlagsMapToLongFlags(t *testing.T) {
-	for short, long := range map[string]string{"l": "level", "g": "grep", "t": "tree", "s": "source"} {
+	for short, long := range map[string]string{"l": "level", "g": "grep", "t": "tree", "s": "source", "p": "pid"} {
 		f := newRootCmd().Flags().ShorthandLookup(short)
 		if f == nil {
 			t.Errorf("-%s is not defined, want a short form of --%s", short, long)
@@ -228,7 +228,7 @@ func TestCLI_HelpShowsShortAndLongForms(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("--help failed: %v", err)
 	}
-	for _, want := range []string{"-l, --level", "-g, --grep", "-t, --tree", "-s, --source"} {
+	for _, want := range []string{"-l, --level", "-g, --grep", "-t, --tree", "-s, --source", "-p, --pid"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help does not show %q", want)
 		}

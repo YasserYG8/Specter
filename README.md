@@ -10,7 +10,7 @@ specter
 specter 3000
 specter my-api-project
 specter api-gateway-container
-specter 18492
+specter --pid 18492
 ```
 
 ---
@@ -51,7 +51,7 @@ Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process 
 
 - **Interactive Discovery Picker**: Run `specter` with zero arguments to browse all active dev servers, listening ports, Docker containers, and project directories in a comfortable, keyboard-driven UI (`↑`/`↓` or `k`/`j`, `Enter` to select).
 - **Project-Aware Resolution**: Automatically infers project names from your working directory, git repositories, or container labels (like the `ports` CLI). Attach instantly via `specter <project-name>`.
-- **Flexible Target Resolution**: Attach by listening port (`specter 3000`), process ID (`specter 14280`), Docker container name or ID (`specter web_app`), or project name (`specter example`).
+- **Flexible Target Resolution**: Attach by listening port (`specter 3000`), process ID (`specter --pid 14280`), Docker container name or ID (`specter web_app`), or project name (`specter example`).
 - **Multi-Process / Worker Tracing**: Child worker processes (e.g. Node.js `cluster`, Gunicorn, Celery, Puma, Unicorn) that already exist when you attach are always traced, and workers started later are followed. `--tree` also traces deeper descendants, up to 3 levels down.
 - **Smart Log Pipeline**: Reassembles split lines and multi-threaded streams, pretty-prints single-line JSON logs, highlights HTTP status codes, and groups multi-line stack traces (Node.js, Python, Go, Java).
 - **Zero Configuration & Strictly Read-Only**: Works against already-running processes without code modifications, SDKs, or restarts. Never injects code or opens inbound network ports.
@@ -141,13 +141,25 @@ specter redis-cache
 specter 7a4b1c2d3e4f
 
 # 5. Attach by Process ID (PID)
-specter 18492
+specter --pid 18492
+specter -p 18492
 ```
+
+A bare number is always a **port**. If nothing listens on it, Specter says so and attaches to nothing. It never falls back to the process whose PID happens to be the same number, because that is almost never the server you meant. When such a process exists, the message names it and shows the command to attach to it:
+
+```
+[specter] No process is listening on port 3000.
+...
+Hint: PID 3000 exists (systemd-journald). To attach to it: specter --pid 3000
+```
+
+A number above 65535 cannot be a port, so `specter 70000` attaches to PID 70000.
 
 ### Flags
 
 | Flag | Shorthand | Description |
 | :--- | :--- | :--- |
+| `--pid <pid>` | `-p` | Attach to the process with this PID, whatever its value. It is never checked as a port. Give one PID, and not together with a port, container or project. |
 | `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. |
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. A stack trace is shown whole when any of its lines matches, and not at all otherwise. To do this Specter holds a trace until it ends (up to 200 ms after its last line), so lines of other processes may appear before it. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. |

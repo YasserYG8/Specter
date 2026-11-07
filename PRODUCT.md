@@ -18,7 +18,7 @@ web
 
 ## Product Purpose
 
-- **What It Does:** Specter (`specter [port|pid|container|project]`) attaches read-only to any active server process or Docker container—or launches a zero-argument interactive terminal picker (`specter`)—and streams live `stdout` and `stderr` directly to the developer's terminal.
+- **What It Does:** Specter (`specter [port|container|project]`, or `specter --pid <pid>`) attaches read-only to any active server process or Docker container—or launches a zero-argument interactive terminal picker (`specter`)—and streams live `stdout` and `stderr` directly to the developer's terminal.
 - **Why It Exists:** Eliminates the workflow friction of locating hidden terminal sessions or restarting running processes just to inspect live logs, JSON records, or unhandled exceptions.
 - **What Success Means:** A developer runs `specter` or `specter 3000` and within milliseconds sees clean, color-coded, line-reassembled logs and grouped stack traces from an already running target with zero impact on the target process.
 
@@ -40,7 +40,7 @@ web
 
 - **Confirmed Capabilities:**
   - Zero-argument interactive discovery picker (`specter`) with non-interactive aligned table fallback for pipes/CI.
-  - Target resolution by TCP port (`specter 3000`), PID (`specter 18492`), Docker container name/ID (`specter billing-api`), or project name (`specter auth-service`).
+  - Target resolution by TCP port (`specter 3000`), PID (`specter --pid 18492`; a bare number is always a port), Docker container name/ID (`specter billing-api`), or project name (`specter auth-service`).
   - Flags: `--level` (`-l`: `debug`, `info`, `warn`, `error`), `--grep` (`-g`: text/regex filter preserving stack traces), `--stderr` (fd 2 only), `--tree` (`-t`: also trace deeper descendants), `--source` (`-s`: `docker`, `file`, `journal`, `strace`), `--json`, `--raw`, `--no-color`.
   - Dynamic shell autocompletion (`specter completion [bash|zsh|fish|powershell]`) for active ports, containers, and projects.
   - Actionable diagnostic errors for Yama `ptrace_scope` restrictions and non-Linux hosts.

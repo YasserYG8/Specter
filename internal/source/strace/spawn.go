@@ -134,7 +134,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 					Err:         util.ErrPtraceDenied,
 					Title:       fmt.Sprintf("Cannot attach to PID %d: Operation not permitted", target.PID),
 					Explanation: "The kernel blocked ptrace attachment. Process may belong to another user or ptrace is restricted.",
-					Remediation: fmt.Sprintf("Run Specter with sudo: sudo specter %d (or setcap cap_sys_ptrace+ep on strace)", target.PID),
+					Remediation: fmt.Sprintf("Run Specter with sudo: sudo specter --pid %d (or setcap cap_sys_ptrace+ep on strace)", target.PID),
 				}
 				return
 			}

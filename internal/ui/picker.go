@@ -115,7 +115,7 @@ func RenderNonInteractiveTable(services []resolver.DiscoveredService, out io.Wri
 	}
 
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "To attach, run: specter <port|pid|container|project>")
+	fmt.Fprintln(out, "To attach, run: specter <port|container|project>  (or: specter --pid <pid>)")
 }
 
 // FormatServiceItem formats a single service entry for picker display with fixed-width columns.
