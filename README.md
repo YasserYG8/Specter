@@ -25,7 +25,7 @@ When running backend microservices, dev servers, or background containers across
 
 ## Install
 
-Specter runs on Linux, and on Windows through WSL2.
+Specter runs on Linux, and on Windows through WSL2. Release files are Linux only: `.tar.gz` archives and `.deb` and `.rpm` packages for `amd64` and `arm64`. There is no macOS or Windows download, because attaching to a process needs Linux kernel interfaces. On Windows, install it inside WSL2. On macOS, run your server and Specter in a Linux VM (for example OrbStack, UTM or Lima) or a Docker container.
 
 Install with Go (1.26 or higher):
 
@@ -258,7 +258,9 @@ Specter is engineered as a Linux-first systems tool leveraging Linux kernel inte
 
 - **Linux**: Native support on all standard distributions (Ubuntu, Debian, Fedora, Arch, Alpine).
 - **Windows**: Fully supported via **WSL2** (Windows Subsystem for Linux).
-- **macOS**: Native macOS is currently out of scope due to macOS System Integrity Protection (SIP) restrictions on `ptrace`.
+- **macOS**: Not supported natively. macOS System Integrity Protection (SIP) blocks `ptrace` on other processes. Run your server and Specter inside a Linux VM (for example OrbStack, UTM or Lima) or a Docker container. The `linux/arm64` build covers VMs on Apple Silicon.
+
+Running `specter <target>` on Windows or macOS stops with a message that says so and what to do. `specter version`, `specter completion` and `--help` work everywhere.
 
 ### Dependencies
 
@@ -306,7 +308,7 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 
 ## Contributing
 
-Contributions are welcome, especially native macOS and Windows support. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+Contributions are welcome. Native macOS and Windows attach is not possible with `ptrace`, so the open ideas for those systems are a Docker-only mode and a `specter run` mode that starts the server itself. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ---
 

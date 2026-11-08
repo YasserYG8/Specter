@@ -13,16 +13,13 @@ builds:
     binary: specter
     env:
       - CGO_ENABLED=0
+    # Linux only: Specter attaches through ptrace and /proc, which macOS and Windows do not offer, so a binary
+    # for them would only print "needs Linux". CI still compiles for both to keep the code portable.
     goos:
       - linux
-      - darwin
-      - windows
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -35,9 +32,6 @@ archives:
     name_template: >-
       {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
     formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     files:
       - LICENSE*
       - README*

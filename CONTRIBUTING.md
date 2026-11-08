@@ -1,12 +1,12 @@
 # Contributing to Specter
 
-Thanks for helping. Bug reports, fixes, tests, docs and new platform support are all welcome.
+Thanks for helping. Bug reports, fixes, tests, docs and ideas for other systems are all welcome.
 
 Specter attaches to a server that is already running and streams its live stdout and stderr to your terminal. See the [README](README.md) for how to use it.
 
 ## Where to help
 
-The biggest open job is native macOS and Windows support. Today Specter runs only on Linux and WSL2, because it depends on `/proc`, `lsof` or `ss`, and `strace`. The binaries for other systems build, but exit with an error at startup. Capturing terminal output without `strace` is the hardest part, and it needs research as well as code.
+Specter runs only on Linux and WSL2, because it depends on `/proc`, `lsof` or `ss`, and `strace`. Releases publish Linux binaries only. Attaching to a running process cannot be done natively on macOS (System Integrity Protection blocks `ptrace`) or on Windows, so those systems will need a different kind of feature, such as a Docker-only mode or a `specter run` mode that starts the server itself. If you want to try one, open an issue first so we can agree on the design. Support for another system would also bring its release builds back.
 
 You can also help by:
 

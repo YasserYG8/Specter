@@ -26,7 +26,7 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 ## Platform constraints
 
 - Development happens on Windows, but the tool only runs on Linux or WSL2. `RunE` in `cmd/specter/main.go` returns an error on any other OS.
-- The code still has to compile for Windows and macOS: CI cross-compiles both and GoReleaser ships them. The repo has no `//go:build` tags, so keep code portable or add tags deliberately.
+- The code still has to compile for Windows and macOS: CI cross-compiles both to check portability, but releases (GoReleaser) publish Linux binaries only, since Specter cannot attach on those systems. The repo has no `//go:build` tags, so keep code portable or add tags deliberately.
 - E2E tests skip themselves (not fail) when not on Linux, when `strace` is missing, or when ptrace is restricted. A passing run on Windows says nothing about them, so run them in WSL2 with `strace` and `lsof` installed and `kernel.yama.ptrace_scope=0`.
 - E2E tests compile their own binaries, or use prebuilt ones from `SPECTER_BIN` and `TESTSERVER_BIN`.
 - For manual testing in WSL2, `python3 test_server.py` listens on port 8080 and emits JSON logs on stdout. `GET /error` writes a traceback to stderr. Then run `specter 8080`.

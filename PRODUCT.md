@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-- **Core Product (Confirmed):** Go 1.24+ standalone static CLI binary (`cmd/specter`, `internal/`), packaged via GoReleaser (`.goreleaser.yaml`) for Linux (`amd64`, `arm64`), macOS (`arm64`), and Windows (`amd64`).
+- **Core Product (Confirmed):** Go 1.24+ standalone static CLI binary (`cmd/specter`, `internal/`), packaged via GoReleaser (`.goreleaser.yaml`) for Linux only (`amd64`, `arm64`), as archives, `.deb` and `.rpm`. macOS and Windows are compiled in CI as a portability check, and are not released.
 - **Web Surface Stack (Undecided / Inferred):** No web frontend scaffold exists in the repository yet; stack and deployment target remain open to be chosen or delegated when a web surface (such as a landing page or docs site) is built.
 
 ## Users

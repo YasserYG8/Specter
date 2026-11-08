@@ -208,12 +208,7 @@ Zero configuration, zero wrappers, read-only.`,
 				} else if len(flagPIDs) == 1 {
 					targetRemediation = fmt.Sprintf("--pid %d", flagPIDs[0])
 				}
-				return &util.DiagnosticError{
-					Err:         util.ErrUnsupportedPlatform,
-					Title:       fmt.Sprintf("Specter requires Linux kernel interfaces (running on %s)", runtime.GOOS),
-					Explanation: "Low-level /proc inspection and ptrace syscall snooping require a Linux environment.",
-					Remediation: fmt.Sprintf("On Windows, run inside WSL2: wsl specter %s (or within a Linux container)", targetRemediation),
-				}
+				return unsupportedPlatformError(runtime.GOOS, targetRemediation)
 			}
 
 			// Context handling SIGINT / SIGTERM
