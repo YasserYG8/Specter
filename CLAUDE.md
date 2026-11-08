@@ -62,8 +62,4 @@ arg or picker -> resolver -> source.Target -> selector -> Source
 
 - `openspec/specs/<capability>/spec.md` holds the requirements for each capability, and is worth reading before changing behavior. Past changes are in `openspec/changes/archive/`.
 - New changes follow the OpenSpec flow (propose, apply, sync, archive), which uses the `openspec` CLI. The steps are in `.agent/workflows/opsx-*.md`.
-- `.agent/architecture.md` explains the design rationale and strace edge cases such as unfinished/resumed syscalls and hex decoding. It is an early draft, so its file layout and some details are out of date.
-
-## Known doc drift
-
-- **Go version:** `go.mod` requires Go 1.26, while `openspec/config.yaml` and `PRODUCT.md` say 1.24+.
+- `.agent/architecture.md` explains the design rationale and strace edge cases such as unfinished/resumed syscalls and hex decoding. It holds historical design notes (draft v2), so its file layout and some details are out of date. The code and `openspec/specs/` are the source of truth.

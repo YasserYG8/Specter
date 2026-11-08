@@ -1,5 +1,8 @@
 # Specter: Architecture
 
+> **Historical design notes (draft v2).** Parts of this file, such as the file layout and the order in which
+> sources are chosen, are out of date. The code and `openspec/specs/` are the source of truth.
+
 Working name: Specter. Linux-first CLI in Go. Draft v2.
 
 ## 1. Goal
@@ -54,7 +57,7 @@ Every source emits the same `Chunk` type, so everything after the source is iden
 
 | Concern | Choice | Why |
 | --- | --- | --- |
-| Language | Go 1.24+ | Single static binary, <10ms startup, robust concurrency, no runtime needed |
+| Language | Go 1.26+ | Single static binary, <10ms startup, robust concurrency, no runtime needed |
 | Child processes | `os/exec` with `context.Context` | Native, clean cancellation and signal termination |
 | CLI flags | `spf13/cobra` | De-facto standard for production CLIs (gh, kubectl, docker) |
 | Colors | `fatih/color` or `muesli/termenv` | Robust, respects `NO_COLOR` and terminal capability detection |

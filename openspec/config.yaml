@@ -4,7 +4,7 @@ context: |
   Project: Specter
   Domain: Linux-first systems developer CLI for live server log streaming by port or PID.
   Tech stack:
-    - Language: Go 1.24+
+    - Language: Go 1.26+
     - CLI: github.com/spf13/cobra
     - Testing: Go standard library `testing` with table-driven tests & fixtures
     - Subprocesses: `os/exec` with `context.Context`
