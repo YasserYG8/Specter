@@ -23,9 +23,10 @@ const drainGrace = 500 * time.Millisecond
 
 // endReport is everything known about how a run ended.
 type endReport struct {
-	Interrupted bool   // the user pressed Ctrl+C (or sent SIGTERM) to Specter
-	PID         int    // the target's PID
-	Container   string // the container name, when the target is a container
+	Interrupted bool          // the user pressed Ctrl+C (or sent SIGTERM) to Specter, or --duration ran out
+	After       time.Duration // set when --duration ran out: how long Specter was asked to stay attached
+	PID         int           // the target's PID
+	Container   string        // the container name, when the target is a container
 
 	// DockerEnded is set when the Docker log stream ended on its own. ContainerCode is then the exit code if
 	// Docker could say.
@@ -43,6 +44,15 @@ type endReport struct {
 // the user interrupted it, 1 when the target ended on its own.
 func reportEnd(w io.Writer, tag string, r endReport) int {
 	switch {
+	case r.Interrupted && r.After > 0:
+		// The user asked for this stop with --duration, so it is a clean exit like Ctrl+C
+		if r.Container != "" {
+			fmt.Fprintf(w, "\n%s Detached from container %s after %s.\n", tag, r.Container, formatDuration(r.After))
+		} else {
+			fmt.Fprintf(w, "\n%s Detached from PID %d after %s.\n", tag, r.PID, formatDuration(r.After))
+		}
+		return 0
+
 	case r.Interrupted:
 		if r.Container != "" {
 			fmt.Fprintf(w, "\n%s Detached from container %s cleanly.\n", tag, r.Container)

@@ -106,6 +106,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 		return nil
 	}
 	cmd.WaitDelay = 3 * time.Second
+	guardAgainstOrphan(cmd)
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {

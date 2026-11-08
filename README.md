@@ -190,6 +190,7 @@ A number above 65535 cannot be a port, so `specter 70000` attaches to PID 70000.
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. Limit: when a Node.js server runs in a terminal, its output goes through reopened descriptors, and when stdout and stderr are the same terminal Specter cannot tell which one a line came from. Those lines count as stdout, so `--stderr` hides them. Redirecting the server's stderr separately (for example `2>err.log`) makes the two distinct again. |
 | `--tree` | `-t` | Also trace deeper descendants of the target (up to 3 levels). Direct child workers are always traced. |
 | `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |
+| `--duration <time>` | | Detach after this time, for example `30s`, `2m` or `1h30m`. The time starts when the capture starts. Specter prints `Detached from PID N after 30s.` and exits with status 0. A number without a unit (`30`) or a negative value is refused before anything is attached. Without the flag, or with `0`, there is no limit. Works with every source. |
 | `--json` | | Output formatted single-line JSON records. |
 | `--raw` | | Bypass line parsing and ANSI color formatting (pure raw stream). |
 | `--no-color` | | Disable ANSI terminal color codes (also adheres to `NO_COLOR`). |
@@ -206,6 +207,9 @@ specter 8000 --grep "auth|unauthorized|invalid token"
 # Isolate unhandled exceptions and crashes on stderr
 specter 3000 --stderr
 
+# Look for 30 seconds, then detach by itself (the target is slowed only for that long)
+specter 3000 --duration 30s
+
 # Trace a Docker container with raw JSON output
 specter api-container --json
 ```
@@ -215,6 +219,7 @@ specter api-container --json
 
 Specter prints its own status messages to stderr, so `specter 3000 | grep 500` is never polluted by them. You may see:
 
+- `[specter:notice] strace slows the target while Specter is attached. Use it on development and test servers, and use --duration to limit the time.` Printed once, right after the `Source:` line, and only for the `strace` source. The other sources do not slow the target. See [Performance While Attached](#performance-while-attached).
 - `[specter:notice] Target writes to its own log file <path>, which Specter does not follow.` The process logs to a file instead of stdout/stderr. Specter names the file once, so you can `tail -f` it.
 - `[specter:notice] Nothing captured yet.` Nothing was captured in the first 10 seconds. The target may be idle, buffering its output, or logging somewhere else. Output hidden by `--level` or `--grep` does not trigger this.
 - `[specter:notice] --grep "..." is not a valid regular expression` The pattern is matched as literal text instead.
@@ -241,7 +246,7 @@ If the server you are watching stops, Specter stops too, prints one line about h
 
 When the exit code cannot be known (a process that writes to a log file, for example, because only a parent can read the exit code of a process after it is gone), the line is `Target PID 595 exited.` Specter notices within about a second.
 
-`Detached from PID N cleanly.` is printed only when **you** stop Specter with Ctrl+C, and then the exit status is **0**. A script can tell the two apart by the exit status. A server that systemd restarts is not reported as stopped: when Specter follows a systemd unit, it keeps following it.
+`Detached from PID N cleanly.` is printed only when **you** stop Specter with Ctrl+C, and then the exit status is **0**. After `--duration` the line is `Detached from PID N after 30s.`, also with status **0**. A script can tell the two apart by the exit status. A server that systemd restarts is not reported as stopped: when Specter follows a systemd unit, it keeps following it.
 
 ---
 

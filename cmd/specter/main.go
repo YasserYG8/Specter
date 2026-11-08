@@ -34,15 +34,16 @@ var (
 	builtBy = "unknown"
 
 	// CLI flags
-	flagLevel   string
-	flagGrep    string
-	flagStderr  bool
-	flagJSON    bool
-	flagRaw     bool
-	flagSource  string
-	flagTree    bool
-	flagNoColor bool
-	flagPIDs    []int
+	flagLevel    string
+	flagGrep     string
+	flagStderr   bool
+	flagJSON     bool
+	flagRaw      bool
+	flagSource   string
+	flagTree     bool
+	flagNoColor  bool
+	flagPIDs     []int
+	flagDuration time.Duration
 
 	// portDiscoveryFunc discovers active listening TCP ports for autocompletion.
 	portDiscoveryFunc = func(ctx context.Context) ([]resolver.ListeningPort, error) {
@@ -186,6 +187,10 @@ Zero configuration, zero wrappers, read-only.`,
 			return completions, cobra.ShellCompDirectiveNoFileComp
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// strace gets a parent-death signal tied to the thread that starts it, so that thread must live as
+			// long as Specter does. This goroutine does, and it is never unlocked.
+			runtime.LockOSThread()
+
 			if flagNoColor {
 				color.NoColor = true
 			}
@@ -197,6 +202,11 @@ Zero configuration, zero wrappers, read-only.`,
 
 			// Reject --pid values that cannot be used, before anything is resolved or attached
 			if err := validatePIDFlag(flagPIDs, args); err != nil {
+				return err
+			}
+
+			// Reject a negative --duration the same way
+			if err := validateDuration(flagDuration); err != nil {
 				return err
 			}
 
@@ -214,6 +224,11 @@ Zero configuration, zero wrappers, read-only.`,
 			// Context handling SIGINT / SIGTERM
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+
+			// --duration stops Specter through the same path as Ctrl+C: it cancels this context. The cause tells
+			// the closing message which of the two happened.
+			ctx, cancelRun := context.WithCancelCause(ctx)
+			defer cancelRun(nil)
 
 			res := resolver.NewDefaultResolver(nil, "")
 			var target *source.Target
@@ -404,6 +419,9 @@ Zero configuration, zero wrappers, read-only.`,
 				fmt.Fprintf(os.Stderr, "%s Discovered active child worker(s): PID %s\n", headerTag, strings.Join(childStrList, ", "))
 			}
 			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
+			if msg := slowdownNoticeFor(src.Name()); msg != "" {
+				printNotice(os.Stderr, msg)
+			}
 
 			// The source and the pipeline get their own contexts. The process watcher stops the source when the
 			// target is gone and gives the pipeline a moment to print what was already read, while the user's
@@ -425,11 +443,18 @@ Zero configuration, zero wrappers, read-only.`,
 							headerTag, src.Name(), err)
 						src = strace.NewSource(strace.Options{FollowTree: flagTree})
 						wireNotices(src)
+						printNotice(os.Stderr, slowdownNotice) // the first source did not slow the target, this one does
 						chunks, errs = src.Start(srcCtx, *target)
 					}
 				default:
 					// Started normally
 				}
+			}
+
+			// --duration: the time starts now, when the source has started
+			if flagDuration > 0 {
+				limit := time.AfterFunc(flagDuration, func() { cancelRun(errDurationElapsed) })
+				defer limit.Stop()
 			}
 
 			// Watch the target process, for sources that cannot tell when it ends. strace usually does, with the
@@ -516,6 +541,9 @@ Zero configuration, zero wrappers, read-only.`,
 				Container:   target.Container,
 				WatcherGone: watcherGone.Load(),
 			}
+			if errors.Is(context.Cause(ctx), errDurationElapsed) {
+				report.After = flagDuration
+			}
 			if es, ok := src.(interface {
 				ExitStatus() (strace.ExitStatus, bool)
 			}); ok {
@@ -544,6 +572,9 @@ Zero configuration, zero wrappers, read-only.`,
 
 	// cobra's own message for --pid abc ("invalid argument ... strconv.ParseInt ...") does not say what to do
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		if strings.Contains(err.Error(), "--duration") {
+			return durationFlagError()
+		}
 		if msg := err.Error(); strings.Contains(msg, "--pid") || strings.Contains(msg, "'p' in -p") {
 			return &util.DiagnosticError{
 				Err:         util.ErrInvalidFlag,
@@ -564,6 +595,7 @@ Zero configuration, zero wrappers, read-only.`,
 	flags.StringVarP(&flagSource, "source", "s", "", "force source selection (docker, file, journal, strace)")
 	flags.BoolVarP(&flagTree, "tree", "t", false, "also trace deeper descendants of the target; direct child workers are always traced")
 	flags.IntSliceVarP(&flagPIDs, "pid", "p", nil, "attach to the process with this PID, for any PID (a bare number is always a port)")
+	flags.DurationVar(&flagDuration, "duration", 0, "detach after this time, for example 30s or 2m (default: no limit)")
 	flags.BoolVar(&flagNoColor, "no-color", false, "disable ANSI color output")
 
 	versionCmd := &cobra.Command{

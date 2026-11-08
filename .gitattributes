@@ -1,2 +1,5 @@
 # The installer is run by sh on Linux, so it must keep LF line endings even when it is checked out on Windows.
 install.sh text eol=lf
+
+# So are the helper scripts
+scripts/*.sh text eol=lf
