@@ -19,7 +19,7 @@
 
 ## 4. Release (the maintainer)
 
-- [ ] 4.1 Commit and push sections 1–3 to `main`, and check that CI is green.
-- [ ] 4.2 Stop and ask the maintainer to push the tag: `git tag v0.1.0 && git push origin v0.1.0`. Don't push it without their explicit go-ahead.
-- [ ] 4.3 After the release workflow finishes: the release page shows 2 archives, 2 `.deb`, 2 `.rpm` and `checksums.txt`, and it is not marked as a pre-release.
-- [ ] 4.4 Run the real one-liner in a clean Docker `ubuntu` container or a fresh WSL distro: Specter installs and `specter --version` prints `0.1.0`.
+- [x] 4.1 Commit and push sections 1–3 to `main`, and check that CI is green.
+- [x] 4.2 Stop and ask the maintainer to push the tag: `git tag v0.1.0 && git push origin v0.1.0`. Don't push it without their explicit go-ahead.
+- [x] 4.3 After the release workflow finishes: the release page shows 2 archives, 2 `.deb`, 2 `.rpm` and `checksums.txt`, and it is not marked as a pre-release.
+- [x] 4.4 Run the real one-liner in a clean Docker `ubuntu` container or a fresh WSL distro: Specter installs and `specter --version` prints `0.1.0`.
