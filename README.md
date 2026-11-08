@@ -27,7 +27,30 @@ When running backend microservices, dev servers, or background containers across
 
 Specter runs on Linux, and on Windows through WSL2. Release files are Linux only: `.tar.gz` archives and `.deb` and `.rpm` packages for `amd64` and `arm64`. There is no macOS or Windows download, because attaching to a process needs Linux kernel interfaces. On Windows, install it inside WSL2. On macOS, run your server and Specter in a Linux VM (for example OrbStack, UTM or Lima) or a Docker container.
 
-Install with Go (1.26 or higher):
+**1. One command** (needs `curl` or `wget`):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/YasserYG8/Specter/main/install.sh | sh
+```
+
+The script checks that you are on Linux, downloads the release for your chip (`amd64` or `arm64`), checks its SHA-256 against `checksums.txt`, and installs `specter` to `/usr/local/bin` (it uses `sudo` only if that folder is not writable). It installs nothing else: if `strace` or `lsof` is missing, it prints the command to install them. Set `SPECTER_VERSION=v0.1.0` to pick a release, or `SPECTER_INSTALL_DIR=$HOME/.local/bin` to install without `sudo`.
+
+**2. Read the script first**, if you do not like piping a script into `sh`:
+
+```bash
+curl -sSLO https://raw.githubusercontent.com/YasserYG8/Specter/main/install.sh
+less install.sh
+sh install.sh
+```
+
+**3. A package** from the [latest release](https://github.com/YasserYG8/Specter/releases/latest) page. The packages list `strace`, `lsof` and `iproute2` as recommended packages:
+
+```bash
+sudo apt install ./specter_0.1.0_linux_amd64.deb     # Debian, Ubuntu
+sudo dnf install ./specter_0.1.0_linux_amd64.rpm     # Fedora, RHEL
+```
+
+**4. With Go** (1.26 or higher):
 
 ```bash
 go install github.com/YasserYG8/Specter/cmd/specter@latest
@@ -35,7 +58,9 @@ go install github.com/YasserYG8/Specter/cmd/specter@latest
 
 This puts `specter` in `$(go env GOPATH)/bin`, so make sure that folder is on your `PATH`.
 
-Then set up the tools Specter uses:
+To uninstall what the script installed: `sudo rm /usr/local/bin/specter`.
+
+If you did not use a package, set up the tools Specter uses:
 
 ```bash
 sudo apt install strace lsof iproute2

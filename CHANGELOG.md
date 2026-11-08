@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-11-08)
+
+First release. Install on Linux or WSL2 with one command, or from a `.deb`, `.rpm` or `go install`: see the README.
 
 ### Breaking
 
