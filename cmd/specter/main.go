@@ -384,7 +384,38 @@ Zero configuration, zero wrappers, read-only.`,
 			if selectErr != nil {
 				return selectErr
 			}
-			defer src.Stop()
+			defer func() { _ = src.Stop() }() // src may be replaced by the fallback below
+			ebpfNote := sourceSelector.EBPFNote
+
+			// The source and the pipeline get their own contexts. The process watcher stops the source when the
+			// target is gone and gives the pipeline a moment to print what was already read, while the user's
+			// interrupt (ctx) stops both at once.
+			srcCtx, cancelSrc := context.WithCancelCause(ctx)
+			defer cancelSrc(nil)
+			pipeCtx, cancelPipe := context.WithCancel(ctx)
+			defer cancelPipe()
+
+			// eBPF passes the selector's checks without having been loaded: the kernel decides when the program is
+			// loaded. So it is started now, before Specter says which source it uses, and a refusal ends in the one
+			// line of the slowdown notice instead of a "Source: ebpf" line followed by a second source.
+			var chunks <-chan source.Chunk
+			var errs <-chan error
+			started := false
+			if src.Name() == "ebpf" {
+				wireNotices(src)
+				c, e, startErr := startNow(srcCtx, src, *target)
+				if startErr != nil {
+					_ = src.Stop()
+					if flagSource == "ebpf" {
+						return selector.ForcedEBPFError(startErr) // the user asked for eBPF: no fallback
+					}
+					ebpfNote = startErr.Error()
+					src = strace.NewSource(strace.Options{FollowTree: flagTree})
+					reason = "standard process tracing (strace)"
+				} else {
+					chunks, errs, started = c, e, true
+				}
+			}
 
 			// Check ptrace permissions upfront if strace source is selected
 			if src.Name() == "strace" {
@@ -419,35 +450,29 @@ Zero configuration, zero wrappers, read-only.`,
 				fmt.Fprintf(os.Stderr, "%s Discovered active child worker(s): PID %s\n", headerTag, strings.Join(childStrList, ", "))
 			}
 			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
-			if msg := slowdownNoticeFor(src.Name()); msg != "" {
+			if msg := slowdownNoticeFor(src.Name(), ebpfNote); msg != "" {
 				printNotice(os.Stderr, msg)
 			}
 
-			// The source and the pipeline get their own contexts. The process watcher stops the source when the
-			// target is gone and gives the pipeline a moment to print what was already read, while the user's
-			// interrupt (ctx) stops both at once.
-			srcCtx, cancelSrc := context.WithCancelCause(ctx)
-			defer cancelSrc(nil)
-			pipeCtx, cancelPipe := context.WithCancel(ctx)
-			defer cancelPipe()
+			if !started {
+				wireNotices(src)
+				chunks, errs = src.Start(srcCtx, *target)
 
-			wireNotices(src)
-			chunks, errs := src.Start(srcCtx, *target)
-
-			// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
-			if flagSource == "" && src.Name() != "strace" {
-				select {
-				case err, ok := <-errs:
-					if ok && err != nil {
-						fmt.Fprintf(os.Stderr, "%s Auto-detected source '%s' unavailable (%v); falling back to strace\n",
-							headerTag, src.Name(), err)
-						src = strace.NewSource(strace.Options{FollowTree: flagTree})
-						wireNotices(src)
-						printNotice(os.Stderr, slowdownNotice) // the first source did not slow the target, this one does
-						chunks, errs = src.Start(srcCtx, *target)
+				// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
+				if flagSource == "" && src.Name() != "strace" {
+					select {
+					case err, ok := <-errs:
+						if ok && err != nil {
+							fmt.Fprintf(os.Stderr, "%s Auto-detected source '%s' unavailable (%v); falling back to strace\n",
+								headerTag, src.Name(), err)
+							src = strace.NewSource(strace.Options{FollowTree: flagTree})
+							wireNotices(src)
+							printNotice(os.Stderr, slowdownNotice) // the first source did not slow the target, this one does
+							chunks, errs = src.Start(srcCtx, *target)
+						}
+					default:
+						// Started normally
 					}
-				default:
-					// Started normally
 				}
 			}
 
@@ -545,7 +570,7 @@ Zero configuration, zero wrappers, read-only.`,
 				report.After = flagDuration
 			}
 			if es, ok := src.(interface {
-				ExitStatus() (strace.ExitStatus, bool)
+				ExitStatus() (source.ExitStatus, bool)
 			}); ok {
 				if status, known := es.ExitStatus(); known {
 					report.Exit = &status
@@ -592,7 +617,7 @@ Zero configuration, zero wrappers, read-only.`,
 	flags.BoolVar(&flagStderr, "stderr", false, "stream only standard error (fd 2)")
 	flags.BoolVar(&flagJSON, "json", false, "force raw JSON lines without pretty-printing")
 	flags.BoolVar(&flagRaw, "raw", false, "bypass parsing and ANSI color formatting")
-	flags.StringVarP(&flagSource, "source", "s", "", "force source selection (docker, file, journal, strace)")
+	flags.StringVarP(&flagSource, "source", "s", "", "force source selection (docker, file, journal, ebpf, strace)")
 	flags.BoolVarP(&flagTree, "tree", "t", false, "also trace deeper descendants of the target; direct child workers are always traced")
 	flags.IntSliceVarP(&flagPIDs, "pid", "p", nil, "attach to the process with this PID, for any PID (a bare number is always a port)")
 	flags.DurationVar(&flagDuration, "duration", 0, "detach after this time, for example 30s or 2m (default: no limit)")
@@ -610,7 +635,8 @@ Zero configuration, zero wrappers, read-only.`,
 
 	_ = cmd.RegisterFlagCompletionFunc("source", func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		sources := []string{
-			"strace\tDirect syscall snooping via ptrace",
+			"ebpf\tKernel capture with eBPF: no slowdown (needs root and Linux 5.8+)",
+			"strace\tDirect syscall snooping via ptrace (slows the target)",
 			"file\tLog file tailing (/proc/<pid>/fd)",
 			"docker\tDocker container stdout/stderr logs",
 			"journal\tSystemd journald service logs",

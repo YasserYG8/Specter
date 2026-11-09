@@ -37,3 +37,19 @@ type Source interface {
 	// Stop cleanly detaches or terminates the stream collector.
 	Stop() error
 }
+
+// ExitStatus is how a followed process ended: with an exit code, or killed by a signal. Every engine reports the
+// end of its target in this form, so the code that prints "exited with code 3" does not care which engine ran.
+type ExitStatus struct {
+	PID    int
+	Code   int    // exit code, when Signal is empty
+	Signal string // signal name such as "SIGKILL" when the process was killed
+
+	// Unprefixed is true when the line had no "[pid N]" prefix, so PID is only the parser's default. strace
+	// leaves the prefix off while a single process is traced, which is true for a target that is alone, and also
+	// for the last child still running after the target ended. Other engines leave it false.
+	Unprefixed bool
+}
+
+// Killed reports whether the process ended because of a signal.
+func (e ExitStatus) Killed() bool { return e.Signal != "" }

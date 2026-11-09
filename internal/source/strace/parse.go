@@ -42,21 +42,6 @@ var (
 //	+++ killed by SIGSEGV (core dumped) +++
 var exitRegex = regexp.MustCompile(`^\+\+\+ (?:exited with (\d+)|killed by (\S+)(?: \(core dumped\))?) \+\+\+$`)
 
-// ExitStatus is how a traced process ended: with an exit code, or killed by a signal.
-type ExitStatus struct {
-	PID    int
-	Code   int    // exit code, when Signal is empty
-	Signal string // signal name such as "SIGKILL" when the process was killed
-
-	// Unprefixed is true when the line had no "[pid N]" prefix, so PID is only the parser's default. strace
-	// leaves the prefix off while a single process is traced, which is true for a target that is alone, and also
-	// for the last child still running after the target ended.
-	Unprefixed bool
-}
-
-// Killed reports whether the process ended because of a signal.
-func (e ExitStatus) Killed() bool { return e.Signal != "" }
-
 type pendingCall struct {
 	fd   int
 	data []byte
@@ -196,7 +181,7 @@ func decodeDest(raw string) string {
 // ParseExit parses a line that reports the end of a traced process. A line without a "[pid N]" prefix belongs to
 // the parser's default PID, which is the target, since strace leaves the prefix off while one process is traced.
 // The second result is false for every other line.
-func (p *Parser) ParseExit(line string) (ExitStatus, bool) {
+func (p *Parser) ParseExit(line string) (source.ExitStatus, bool) {
 	line = strings.TrimSpace(line)
 	pid := p.defaultPID
 	unprefixed := true
@@ -210,16 +195,16 @@ func (p *Parser) ParseExit(line string) (ExitStatus, bool) {
 
 	m := exitRegex.FindStringSubmatch(line)
 	if m == nil {
-		return ExitStatus{}, false
+		return source.ExitStatus{}, false
 	}
 	if m[2] != "" {
-		return ExitStatus{PID: pid, Signal: m[2], Unprefixed: unprefixed}, true
+		return source.ExitStatus{PID: pid, Signal: m[2], Unprefixed: unprefixed}, true
 	}
 	code, err := strconv.Atoi(m[1])
 	if err != nil {
-		return ExitStatus{}, false
+		return source.ExitStatus{}, false
 	}
-	return ExitStatus{PID: pid, Code: code, Unprefixed: unprefixed}, true
+	return source.ExitStatus{PID: pid, Code: code, Unprefixed: unprefixed}, true
 }
 
 // vectorHexParts returns the iov_base strings of a writev vector in order. When strace cut an element, the

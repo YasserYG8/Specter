@@ -353,7 +353,7 @@ func TestReadLoop_FailedAttachDoesNotStopCapture(t *testing.T) {
 }
 
 func TestExitStatus_OnlyTheTargetCounts(t *testing.T) {
-	run := func(t *testing.T, lines ...string) (ExitStatus, bool) {
+	run := func(t *testing.T, lines ...string) (source.ExitStatus, bool) {
 		t.Helper()
 		s := NewSource()
 		runReadLoop(t, s, strings.Join(lines, "\n")+"\n") // the parser's default PID, the target, is 1
@@ -368,14 +368,14 @@ func TestExitStatus_OnlyTheTargetCounts(t *testing.T) {
 
 	t.Run("a line without a prefix belongs to the target", func(t *testing.T) {
 		st, ok := run(t, `+++ exited with 3 +++`)
-		if !ok || st != (ExitStatus{PID: 1, Code: 3, Unprefixed: true}) {
+		if !ok || st != (source.ExitStatus{PID: 1, Code: 3, Unprefixed: true}) {
 			t.Errorf("got %+v, %v", st, ok)
 		}
 	})
 
 	t.Run("killed by a signal", func(t *testing.T) {
 		st, ok := run(t, `[pid 1] +++ killed by SIGKILL +++`)
-		if !ok || st != (ExitStatus{PID: 1, Signal: "SIGKILL"}) {
+		if !ok || st != (source.ExitStatus{PID: 1, Signal: "SIGKILL"}) {
 			t.Errorf("got %+v, %v", st, ok)
 		}
 	})
@@ -384,7 +384,7 @@ func TestExitStatus_OnlyTheTargetCounts(t *testing.T) {
 		st, ok := run(t,
 			`[pid 5101] +++ exited with 0 +++`,
 			`[pid     1] +++ exited with 3 +++`)
-		if !ok || st != (ExitStatus{PID: 1, Code: 3}) {
+		if !ok || st != (source.ExitStatus{PID: 1, Code: 3}) {
 			t.Errorf("expected the target's code 3, got %+v, %v", st, ok)
 		}
 	})
@@ -393,7 +393,7 @@ func TestExitStatus_OnlyTheTargetCounts(t *testing.T) {
 		st, ok := run(t,
 			`[pid 1] +++ exited with 3 +++`,
 			`[pid 5101] +++ exited with 0 +++`)
-		if !ok || st != (ExitStatus{PID: 1, Code: 3}) {
+		if !ok || st != (source.ExitStatus{PID: 1, Code: 3}) {
 			t.Errorf("expected the target's code 3 to survive the child's exit, got %+v, %v", st, ok)
 		}
 	})

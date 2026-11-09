@@ -28,6 +28,9 @@ var (
 	// ErrInvalidFlag indicates a flag was given a value Specter cannot use.
 	ErrInvalidFlag = errors.New("invalid flag value")
 
+	// ErrEBPFUnavailable indicates the eBPF source was asked for with --source ebpf but cannot run here.
+	ErrEBPFUnavailable = errors.New("the eBPF source cannot run here")
+
 	// ErrUnsupportedPlatform indicates the current OS is not supported natively.
 	ErrUnsupportedPlatform = errors.New("unsupported platform: Specter requires Linux or WSL2")
 )

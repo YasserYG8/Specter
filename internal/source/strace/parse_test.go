@@ -461,20 +461,20 @@ func TestParser_ParseExit(t *testing.T) {
 	cases := []struct {
 		name string
 		line string
-		want ExitStatus
+		want source.ExitStatus
 		ok   bool
 	}{
-		{"exit code, target without a prefix", `+++ exited with 3 +++`, ExitStatus{PID: 617, Code: 3, Unprefixed: true}, true},
-		{"exit code 0", `+++ exited with 0 +++`, ExitStatus{PID: 617, Code: 0, Unprefixed: true}, true},
-		{"exit code with a pid prefix", `[pid   575] +++ exited with 0 +++`, ExitStatus{PID: 575, Code: 0}, true},
-		{"killed by SIGKILL", `+++ killed by SIGKILL +++`, ExitStatus{PID: 617, Signal: "SIGKILL", Unprefixed: true}, true},
-		{"killed by SIGTERM with a prefix", `[pid 595] +++ killed by SIGTERM +++`, ExitStatus{PID: 595, Signal: "SIGTERM"}, true},
-		{"killed with a core dump", `+++ killed by SIGSEGV (core dumped) +++`, ExitStatus{PID: 617, Signal: "SIGSEGV", Unprefixed: true}, true},
-		{"surrounding whitespace", "  +++ exited with 7 +++  ", ExitStatus{PID: 617, Code: 7, Unprefixed: true}, true},
-		{"a write", `[pid 5] write(1, "\x68\x69", 2) = 2`, ExitStatus{}, false},
-		{"a signal line", `--- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED} ---`, ExitStatus{}, false},
-		{"text that mentions exiting", `exited with 3`, ExitStatus{}, false},
-		{"empty", ``, ExitStatus{}, false},
+		{"exit code, target without a prefix", `+++ exited with 3 +++`, source.ExitStatus{PID: 617, Code: 3, Unprefixed: true}, true},
+		{"exit code 0", `+++ exited with 0 +++`, source.ExitStatus{PID: 617, Code: 0, Unprefixed: true}, true},
+		{"exit code with a pid prefix", `[pid   575] +++ exited with 0 +++`, source.ExitStatus{PID: 575, Code: 0}, true},
+		{"killed by SIGKILL", `+++ killed by SIGKILL +++`, source.ExitStatus{PID: 617, Signal: "SIGKILL", Unprefixed: true}, true},
+		{"killed by SIGTERM with a prefix", `[pid 595] +++ killed by SIGTERM +++`, source.ExitStatus{PID: 595, Signal: "SIGTERM"}, true},
+		{"killed with a core dump", `+++ killed by SIGSEGV (core dumped) +++`, source.ExitStatus{PID: 617, Signal: "SIGSEGV", Unprefixed: true}, true},
+		{"surrounding whitespace", "  +++ exited with 7 +++  ", source.ExitStatus{PID: 617, Code: 7, Unprefixed: true}, true},
+		{"a write", `[pid 5] write(1, "\x68\x69", 2) = 2`, source.ExitStatus{}, false},
+		{"a signal line", `--- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED} ---`, source.ExitStatus{}, false},
+		{"text that mentions exiting", `exited with 3`, source.ExitStatus{}, false},
+		{"empty", ``, source.ExitStatus{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

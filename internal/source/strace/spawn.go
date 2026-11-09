@@ -31,7 +31,7 @@ type Source struct {
 	// The strace line saying that attaching to the target itself failed, for example
 	// "strace: attach: ptrace(PTRACE_SEIZE, 773): Operation not permitted"
 	targetAttachErr string
-	exit            *ExitStatus // how the target ended, once strace has printed its exit line
+	exit            *source.ExitStatus // how the target ended, once strace has printed its exit line
 	options         Options
 
 	// Notices and tests
@@ -433,11 +433,11 @@ func (s *Source) Stop() error {
 
 // ExitStatus returns how the target ended, when strace has reported it. The second result is false while the
 // target is still running, and when strace never printed its exit line.
-func (s *Source) ExitStatus() (ExitStatus, bool) {
+func (s *Source) ExitStatus() (source.ExitStatus, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.exit == nil {
-		return ExitStatus{}, false
+		return source.ExitStatus{}, false
 	}
 	return *s.exit, true
 }

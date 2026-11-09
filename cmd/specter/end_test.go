@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/YasserYG8/Specter/internal/source"
-	"github.com/YasserYG8/Specter/internal/source/strace"
 )
 
 func intPtr(n int) *int { return &n }
 
 func TestReportEnd(t *testing.T) {
-	exited := func(code int) *strace.ExitStatus { return &strace.ExitStatus{PID: 617, Code: code} }
-	killed := func(sig string) *strace.ExitStatus { return &strace.ExitStatus{PID: 595, Signal: sig} }
+	exited := func(code int) *source.ExitStatus { return &source.ExitStatus{PID: 617, Code: code} }
+	killed := func(sig string) *source.ExitStatus { return &source.ExitStatus{PID: 595, Signal: sig} }
 
 	cases := []struct {
 		name       string
@@ -136,8 +135,8 @@ func TestReportEnd(t *testing.T) {
 // "Detached cleanly" must mean one thing: the user interrupted.
 func TestReportEnd_DetachedOnlyWhenInterrupted(t *testing.T) {
 	reports := []endReport{
-		{PID: 1, Exit: &strace.ExitStatus{PID: 1, Code: 0}},
-		{PID: 1, Exit: &strace.ExitStatus{PID: 1, Signal: "SIGKILL"}},
+		{PID: 1, Exit: &source.ExitStatus{PID: 1, Code: 0}},
+		{PID: 1, Exit: &source.ExitStatus{PID: 1, Signal: "SIGKILL"}},
 		{PID: 1, WatcherGone: true},
 		{Container: "c", DockerEnded: true},
 		{Container: "c", DockerEnded: true, ContainerCode: intPtr(0)},

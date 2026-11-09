@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/YasserYG8/Specter/internal/source"
-	"github.com/YasserYG8/Specter/internal/source/strace"
 )
 
 // errTargetEnded is returned by RunE when the target stopped on its own, so Specter exits with status 1. The
@@ -34,7 +33,7 @@ type endReport struct {
 	ContainerCode *int
 
 	// Exit is the target's own exit line from strace, with the code or the signal.
-	Exit *strace.ExitStatus
+	Exit *source.ExitStatus
 
 	// WatcherGone is set when the process watcher saw the target disappear.
 	WatcherGone bool
