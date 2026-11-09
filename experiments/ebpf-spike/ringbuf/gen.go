@@ -6,3 +6,5 @@ package main
 // needs no clang. To regenerate after changing bpf/spike.c, install clang and libbpf-dev and run: go generate
 //
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" -target bpfel spike bpf/spike.c
+
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" -target bpfel diag bpf/diag.c
