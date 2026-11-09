@@ -78,9 +78,17 @@ func (c *session) counters() string {
 	for i := range last {
 		_ = c.objs.LastOther.Lookup(uint32(i), &last[i])
 	}
-	parts = append(parts, fmt.Sprintf("followed=[%s]", strings.Join(followed, ",")),
-		fmt.Sprintf("last_other(ns_pid=%d ns_tgid=%d host=%d/%d)", last[0], last[1], last[2]>>32, last[2]&0xffffffff))
-	return strings.Join(parts, " ")
+	head := fmt.Sprintf("followed=[%s] last_other(ns_pid=%d ns_tgid=%d host=%d/%d)", strings.Join(followed, ","), last[0], last[1], last[2]>>32, last[2]&0xffffffff)
+	// The diagnostic counters come first, so that a long line cut short by an annotation still shows them
+	var diag, rest []string
+	for _, p := range parts {
+		if strings.HasPrefix(p, "DIAG_") {
+			diag = append(diag, p)
+		} else {
+			rest = append(rest, p)
+		}
+	}
+	return strings.Join(append(append([]string{head}, diag...), rest...), " ")
 }
 
 // close detaches the programs and releases everything. The kernel does the same on its own when Specter exits,

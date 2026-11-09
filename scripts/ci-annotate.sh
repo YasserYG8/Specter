@@ -17,5 +17,5 @@ lines=${3:-40}
 
 # A workflow command needs % and line breaks escaped. The message is kept short: the limit is 64 KB, and a long
 # annotation is hard to read.
-message=$(tail -n "$lines" "$file" | cut -c1-300 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+message=$(tail -n "$lines" "$file" | cut -c1-1800 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
 printf '::error title=%s::%s\n' "$title" "$message"
