@@ -22,6 +22,8 @@
 #   FORMAT [text]    text or markdown
 #   OUT_DIR []       keep the raw results here; by default they are deleted
 #   SPECTER_FLAGS [] extra flags for specter, for example "--tree"
+#   ENGINE [strace] the capture engine of Specter, passed as --source: "strace" or "ebpf". ebpf needs root, Linux 5.8
+#                   or later and kernel type information, and the report says which engine was measured.
 #   READER [specter] "bpftrace" measures the eBPF reader of the spike (experiments/ebpf-spike) in place of Specter.
 #                    It needs bpftrace and root. The report then says "bpftrace" where it says "Specter".
 set -euo pipefail
@@ -36,6 +38,7 @@ FORMAT=${FORMAT:-text}
 OUT_DIR=${OUT_DIR:-}
 SPECTER_FLAGS=${SPECTER_FLAGS:-}
 READER=${READER:-specter}
+ENGINE=${ENGINE:-strace}
 
 die() {
   echo "bench-overhead: $*" >&2
@@ -46,7 +49,12 @@ die() {
 
 [ "$(uname -s)" = "Linux" ] || die "this needs Linux: Specter attaches with ptrace, which exists only there. On Windows, run it inside WSL2."
 case "$READER" in
-  specter) command -v strace >/dev/null 2>&1 || die "strace is not installed. Install it first, for example: sudo apt install strace" ;;
+  specter)
+    case "$ENGINE" in
+      strace) command -v strace >/dev/null 2>&1 || die "strace is not installed. Install it first, for example: sudo apt install strace" ;;
+      ebpf) [ "$(id -u)" = "0" ] || die "the eBPF engine needs root: run this script with sudo" ;;
+      *) die "ENGINE must be strace or ebpf, got '$ENGINE'" ;;
+    esac ;;
   bpftrace)
     command -v bpftrace >/dev/null 2>&1 || die "bpftrace is not installed. Install it first, for example: sudo apt install bpftrace"
     [ "$(id -u)" = "0" ] || die "loading eBPF programs needs root: run this script with sudo" ;;
@@ -56,7 +64,7 @@ esac
 
 scope=0
 [ -r /proc/sys/kernel/yama/ptrace_scope ] && scope=$(cat /proc/sys/kernel/yama/ptrace_scope)
-if [ "$READER" = specter ] && { [ "$scope" = "3" ] || { [ "$scope" != "0" ] && [ "$(id -u)" != "0" ]; }; }; then
+if [ "$READER" = specter ] && [ "$ENGINE" = strace ] && { [ "$scope" = "3" ] || { [ "$scope" != "0" ] && [ "$(id -u)" != "0" ]; }; }; then
   die "ptrace is not permitted here (kernel.yama.ptrace_scope is $scope and you are not root).
   Run this script as root, or lower the setting for the test and restore it afterwards:
     sudo sysctl -w kernel.yama.ptrace_scope=0
@@ -134,23 +142,35 @@ stop_server() {
 
 attach_specter() {
   # shellcheck disable=SC2086 # SPECTER_FLAGS is a list of words on purpose
-  "$SPECTER" --pid "$SERVER_PID" --no-color $SPECTER_FLAGS >"$WORK/specter.out" 2>"$WORK/specter.err" &
+  "$SPECTER" --pid "$SERVER_PID" --source "$ENGINE" --no-color $SPECTER_FLAGS >"$WORK/specter.out" 2>"$WORK/specter.err" &
   SPECTER_PID=$!
   for _ in $(seq 1 200); do
-    [ "$(tracer_of "$SERVER_PID")" != "0" ] && break
+    if [ "$ENGINE" = strace ]; then
+      # strace is the server's tracer once it has attached
+      [ "$(tracer_of "$SERVER_PID")" != "0" ] && break
+    else
+      # eBPF leaves no tracer: Specter's own Source: line says the programs are loaded
+      grep -q 'Source: ebpf' "$WORK/specter.err" 2>/dev/null && break
+    fi
     kill -0 "$SPECTER_PID" 2>/dev/null || die "specter exited before it attached:
 $(cat "$WORK/specter.err")"
     sleep 0.1
   done
-  [ "$(tracer_of "$SERVER_PID")" != "0" ] || die "specter did not attach within 20 seconds:
+  if [ "$ENGINE" = strace ]; then
+    [ "$(tracer_of "$SERVER_PID")" != "0" ] || die "specter did not attach within 20 seconds:
 $(cat "$WORK/specter.err")"
-  sleep 1 # let strace attach to every thread
+  else
+    grep -q 'Source: ebpf' "$WORK/specter.err" || die "specter did not start the eBPF engine within 20 seconds:
+$(cat "$WORK/specter.err")"
+  fi
+  sleep 1 # let the engine attach to every thread
 }
 
 detach_specter() {
   kill -INT "$SPECTER_PID" 2>/dev/null || true
   wait "$SPECTER_PID" 2>/dev/null || true
   SPECTER_PID=""
+  [ "$ENGINE" = strace ] || return 0 # eBPF leaves nothing attached to the server
   for _ in $(seq 1 50); do # strace must be gone before the next run, or its detach would count in it
     [ "$(tracer_of "$SERVER_PID")" = "0" ] && return
     sleep 0.1
@@ -247,7 +267,13 @@ describe_machine() {
   cores=$(nproc 2>/dev/null || echo "?")
   grep -qi microsoft /proc/version 2>/dev/null && wsl=", WSL2"
   local tool
-  if [ "$READER" = bpftrace ]; then tool=$(bpftrace --version 2>&1 | head -n 1); else tool=$(strace -V 2>&1 | head -n 1); fi
+  if [ "$READER" = bpftrace ]; then
+    tool=$(bpftrace --version 2>&1 | head -n 1)
+  elif [ "$ENGINE" = ebpf ]; then
+    tool="Specter with the ebpf engine"
+  else
+    tool="Specter with the strace engine, $(strace -V 2>&1 | head -n 1)"
+  fi
   echo "$cpu, $cores cores, kernel $(uname -r)$wsl, $tool, $(date +%Y-%m-%d)"
 }
 
@@ -260,6 +286,7 @@ done
 [ "$CLOSED" = "1" ] && run_load closed 0
 
 echo >&2
-"$BENCHREPORT" -dir "$RESULTS" -format "$FORMAT" -reader "$READER" -machine "$(describe_machine)"
+if [ "$READER" = bpftrace ]; then label=bpftrace; else label="Specter ($ENGINE)"; fi
+"$BENCHREPORT" -dir "$RESULTS" -format "$FORMAT" -reader "$label" -machine "$(describe_machine)"
 [ -n "$OUT_DIR" ] && echo "Raw results are in $OUT_DIR" >&2
 exit 0

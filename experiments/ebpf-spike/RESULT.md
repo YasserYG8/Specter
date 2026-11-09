@@ -84,3 +84,24 @@ The `bpftrace` process itself used 13% of one core at 1,000 requests per second.
 - Confirm the numbers on a native Linux machine (not WSL2) before the change is approved, and run step 4 first to see whether long lines are solvable.
 
 This is a recommendation. The decision to start the full eBPF source belongs to the maintainer, and this change does not start it.
+
+## 6. Proofs for the full reader (ebpf-source change, tasks 1.1 to 1.5)
+
+After the maintainer decided to build the eBPF source, the three gaps that `bpftrace` could not close were tried with a small Go program (`cilium/ebpf`, in `experiments/ebpf-spike/ringbuf/`, its own module). It loads a BPF program written in C and compiled with clang 18, and the compiled object is committed. The proofs are Go tests that start a small writer process which does exactly one `write(2)` on command. They ran as root in WSL2, and then on GitHub's native `ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64) virtual machines, where a skipped test fails the job. **All of them passed in both places.**
+
+| Proof | What the test does | Result |
+| :--- | :--- | :--- |
+| Long writes (gap 1) | One `write` of 90, 16,384, 16,385, 50,000, 65,536 and 100,000 bytes to a pipe | The bytes arrive whole and in order, in chunks of 16 KB through the ring buffer. The 100,000 byte write gives the first 65,536 bytes and reports **34,464 bytes left out**. No write was lost and none was unreadable |
+| PIDs in our namespace (gap 5) | Follow one process by the PID Specter sees; a second process of the same program is not followed | Only the chosen process is captured. The PIDs in the events equal the PIDs in this namespace, which in WSL2 differ from the kernel's top-level PIDs. The real Specter test server was captured too |
+| Forked workers (gap 4) | A process starts a child, which starts a child, which starts a child, with a depth limit of 1, 2 and 3 | Exactly the generations inside the limit are captured, each with its own PID. Threads are not mistaken for processes |
+| Where a descriptor leads (gap 2) | Read the device and inode of the file behind a descriptor in the kernel, and compare with `stat` of `/proc/<pid>/fd/N` | They match for a pipe and for a terminal (`/dev/pts/N`), for a private pipe and for `/dev/null`. The kernel's device number needs the conversion `MAJOR<<20 \| MINOR` from `stat`'s |
+
+What this changes in the gaps above:
+
+- **Gap 1 (long lines) is closed:** a ring buffer reservation does not use the 512-byte BPF stack, and the program reads each write when the call returns, so up to 64 KB arrive whole.
+- **Gap 5 (PIDs) is closed,** with `bpf_get_ns_current_pid_tgid` and the namespace's inode, and the child's PID found by searching its `struct pid` for the entry that belongs to Specter's namespace.
+- **Gap 4 (workers) is closed** with a `sched_process_fork` program.
+- **Gap 2 (descriptor destinations) is closed** by comparing device and inode, for the cases above. A descriptor that is closed before the write returns is read as unknown, and the rules for unknown destinations are in the design.
+- Gaps 3 (`writev`) and 6 (reading the buffer at exit instead of at entry) are not part of these proofs. Reading at exit is how the program works, and `writev` is task 3.1.
+
+The runners' kernel versions are in the job log of the `ebpf-spike-proof` branch.

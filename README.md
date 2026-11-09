@@ -66,7 +66,7 @@ If you did not use a package, set up the tools Specter uses:
 sudo apt install strace lsof iproute2
 ```
 
-While the `strace` source is attached, Specter slows the target, so read [Performance While Attached](#performance-while-attached) before pointing it at a busy server.
+Specter has two ways to capture a terminal or a pipe. The **`ebpf` engine** reads the output inside the kernel and never stops the target, and it needs `sudo` and Linux 5.8 or later. The **`strace` engine** works everywhere, but it slows the target. Specter picks `ebpf` when it can run, and otherwise falls back to `strace` and tells you why in one line. Read [Performance While Attached](#performance-while-attached) before pointing it at a busy server.
 
 Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process fails with `Operation not permitted` until you allow it. Either run `sudo "$(which specter)" 3000`, or see [Kernel Permissions](#kernel-permissions-ptrace_scope) for the other options.
 
@@ -123,7 +123,8 @@ specter [port | pid | container | project] (or interactive picker)
        ├── Docker              ─── Streams docker logs -f --tail 0
        ├── Systemd Journal     ─── Reads journalctl -f _PID=<pid>
        ├── Regular File        ─── Follows file descriptor target
-       └── PTY / Syscall Trace ─── Attaches via optimized strace (trace=write,writev on fds 1 & 2)
+       ├── eBPF                ─── Kernel programs read write/writev of the target; it is never stopped (root, Linux 5.8+)
+       └── PTY / Syscall Trace ─── Attaches via strace (trace=write,writev on fds 1 & 2); slows the target
        │
        ▼
 [Line Assembler]        ─── Thread/FD buffer assembly, flush timer, streaming UTF-8 decoding
@@ -140,7 +141,8 @@ specter [port | pid | container | project] (or interactive picker)
    - **Docker Container** (checked first): Streams through the `docker` CLI (`docker logs`).
    - **Systemd Service**: Streams via `journalctl` if governed by systemd.
    - **File Redirection**: Follows file descriptors if stdout/stderr point to regular log files.
-   - **Terminal / PTY**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes. A child process is shown only when its output goes to the same place as the server's own stdout or stderr. Helpers that write to a private pipe or to `/dev/null` (for example the tools a Next.js dev server starts) are not shown, because their lines never reach your terminal either. Node.js servers started in a terminal (`npm run dev`, Next.js, Express, Vite) write through a descriptor that Node opened again from the terminal, such as fd 22, so Specter also follows any other descriptor that leads to the same terminal, pipe or socket as the server's stdout or stderr.
+   - **eBPF** (terminal or pipe, when this machine can run it: root or `CAP_BPF` with `CAP_PERFMON`, Linux 5.8 or later, and `/sys/kernel/btf/vmlinux`): small programs in the kernel keep only the target's own `write()` and `writev()` output, up to 64 KB per write, and hand it to Specter through a ring buffer. The target is never stopped and shows no tracer, so a process that `gdb` or another `strace` already traces can still be watched. Workers, `--tree`, writes through reopened terminal descriptors (Node.js) and the exit code work as with `strace`. If the target writes faster than Specter reads, Specter says how many writes were lost.
+   - **Terminal / PTY, as the fallback**: Uses `strace` to watch `write()` and `writev()` syscalls for descriptors 1 and 2, including writes from concurrent threads and worker processes. A child process is shown only when its output goes to the same place as the server's own stdout or stderr. Helpers that write to a private pipe or to `/dev/null` (for example the tools a Next.js dev server starts) are not shown, because their lines never reach your terminal either. Node.js servers started in a terminal (`npm run dev`, Next.js, Express, Vite) write through a descriptor that Node opened again from the terminal, such as fd 22, so Specter also follows any other descriptor that leads to the same terminal, pipe or socket as the server's stdout or stderr.
 3. **Stream Assembly**: Hex buffers (`-xx`) are decoded into raw byte chunks. The `LineAssembler` handles thread interleaving, reassembles split lines, and flushes interactive prompts promptly.
 4. **Formatting & Filtering**: Automatically categorizes log levels (`DEBUG`, `INFO`, `WARN`, `ERROR`), highlights HTTP status codes, and groups multi-line stack traces before rendering.
 
@@ -189,7 +191,7 @@ A number above 65535 cannot be a port, so `specter 70000` attaches to PID 70000.
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. A stack trace is shown whole when any of its lines matches, and not at all otherwise. To do this Specter holds a trace until it ends (up to 200 ms after its last line), so lines of other processes may appear before it. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. Limit: when a Node.js server runs in a terminal, its output goes through reopened descriptors, and when stdout and stderr are the same terminal Specter cannot tell which one a line came from. Those lines count as stdout, so `--stderr` hides them. Redirecting the server's stderr separately (for example `2>err.log`) makes the two distinct again. |
 | `--tree` | `-t` | Also trace deeper descendants of the target (up to 3 levels). Direct child workers are always traced. |
-| `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `strace`). |
+| `--source <name>` | `-s` | Force a specific capture engine (`docker`, `file`, `journal`, `ebpf`, `strace`). `--source ebpf` never falls back: if eBPF cannot run, Specter says why and exits before attaching. `--source strace` keeps the engine that slows the target, and prints no tip. |
 | `--duration <time>` | | Detach after this time, for example `30s`, `2m` or `1h30m`. The time starts when the capture starts. Specter prints `Detached from PID N after 30s.` and exits with status 0. A number without a unit (`30`) or a negative value is refused before anything is attached. Without the flag, or with `0`, there is no limit. Works with every source. |
 | `--json` | | Output formatted single-line JSON records. |
 | `--raw` | | Bypass line parsing and ANSI color formatting (pure raw stream). |
@@ -219,7 +221,8 @@ specter api-container --json
 
 Specter prints its own status messages to stderr, so `specter 3000 | grep 500` is never polluted by them. You may see:
 
-- `[specter:notice] strace slows the target while Specter is attached. Use it on development and test servers, and use --duration to limit the time.` Printed once, right after the `Source:` line, and only for the `strace` source. The other sources do not slow the target. See [Performance While Attached](#performance-while-attached).
+- `[specter:notice] strace slows the target while Specter is attached. Use it on development and test servers, and use --duration to limit the time.` Printed once, right after the `Source:` line, and only for the `strace` engine. When `strace` was chosen because the fast engine could not run, the same line ends with the reason, for example `Run with sudo to use the fast eBPF engine.` or `eBPF needs Linux 5.8 or later (this kernel is 5.4).` The other sources, including `ebpf`, do not slow the target.
+- `[specter:notice] 120 writes were lost because the target wrote faster than Specter could read.` With the `ebpf` engine only: the ring buffer between the kernel and Specter was full. Printed at most once per second, with the number of writes lost since the last notice, and never when nothing was lost. See [Performance While Attached](#performance-while-attached).
 - `[specter:notice] Target writes to its own log file <path>, which Specter does not follow.` The process logs to a file instead of stdout/stderr. Specter names the file once, so you can `tail -f` it.
 - `[specter:notice] Nothing captured yet.` Nothing was captured in the first 10 seconds. The target may be idle, buffering its output, or logging somewhere else. Output hidden by `--level` or `--grep` does not trigger this.
 - `[specter:notice] --grep "..." is not a valid regular expression` The pattern is matched as literal text instead.
@@ -252,23 +255,34 @@ When the exit code cannot be known (a process that writes to a log file, for exa
 
 ## Performance While Attached
 
-When Specter uses the `strace` source, it slows the target. `strace` stops the process at every system call, including the ones it does not print, so the cost depends on how often the server makes calls and writes.
+Specter has two engines for a terminal or a pipe, and they cost very different amounts.
 
-**Production use is not recommended yet.** Use Specter on development and test servers. The numbers below show why.
+- **`ebpf`** reads the output inside the kernel and never stops the target. It needs root and Linux 5.8 or later, and Specter picks it when it can.
+- **`strace`** stops the process at every system call, including the ones it does not print, so the cost depends on how often the server makes calls and writes. Specter uses it when `ebpf` cannot run, and says so in a notice.
 
-These were measured with [`scripts/bench-overhead.sh`](scripts/bench-overhead.sh) on 2026-11-09: a small HTTP server that writes one log line per request, on a 4-core laptop (AMD Ryzen 5 3500U) under WSL2, run as root, with `strace` 6.8. Each figure is the median of 5 runs of 10 seconds, with and without Specter attached. Latency is counted from the time each request was due, so a server that falls behind shows its queue.
+**Production use is not recommended yet.** Use Specter on development and test servers. The `strace` engine should never be attached to a server you care about. The `ebpf` engine is much lighter, but its numbers below come from WSL2 on a laptop, which is noisy, and the rule is to confirm them on a native Linux machine first (`scripts/bench-overhead.sh` and the `bench` workflow do that).
 
-| Load | Median latency without → with Specter | Requests per second without → with |
-| :--- | :--- | :--- |
-| 100 requests/s | 2.1 ms → 5.4 ms | 100 → 100 |
-| 1,000 requests/s | 1.3 ms → 819 ms | 1,000 → 885 |
-| As fast as the server goes | 3.9 ms → 243 ms | 10,400 → 225 |
+These were measured with [`scripts/bench-overhead.sh`](scripts/bench-overhead.sh) on 2026-11-09: a small HTTP server that writes one log line per request, on a 4-core laptop (AMD Ryzen 5 3500U) under WSL2, run as root. Each figure is the median of 5 runs of 10 seconds, with and without Specter attached. Latency is counted from the time each request was due, so a server that falls behind shows its queue.
 
-At 100 requests per second the server keeps up, and each request takes about 3 ms longer. At 1,000 requests per second it does not: the server can no longer answer every request on time, so requests queue and latency grows by hundreds of milliseconds. At full speed, throughput fell by about 98%. Specter itself used up to 73% of one core, and `strace` up to 91%. Every line was still captured (60,000 of 60,000 at 1,000 requests per second). The run without Specter was noisy at full speed (its runs differed by more than 100%), so read that row as the size of the effect and not as an exact figure. The full report is in [`test/bench/results/`](test/bench/results/2026-11-09-strace-wsl2.md).
+| Engine | Load | Median latency without → with Specter | Requests per second without → with |
+| :--- | :--- | :--- | :--- |
+| `strace` | 100 requests/s | 2.1 ms → 5.4 ms | 100 → 100 |
+| `strace` | 1,000 requests/s | 1.3 ms → 819 ms | 1,000 → 885 |
+| `strace` | As fast as the server goes | 3.9 ms → 243 ms | 10,400 → 225 |
+| `ebpf` | 100 requests/s | 2.25 ms → 2.35 ms (+4%) | 100 → 100 |
+| `ebpf` | 1,000 requests/s | 1.37 ms → 1.50 ms (+9.7%) | 1,000 → 1,000 |
+| `ebpf` | As fast as the server goes | 2.6 ms → 4.0 ms | 16,000 → 10,200 |
 
-Your server will give different numbers. Run the script on a copy of it, or on a machine like it, before deciding. Two ways to limit the effect: attach for a short time with `--duration 30s`, and use a source that does not slow the target when you can (below).
+What the numbers say:
 
-The slowdown ends when Specter detaches (Ctrl+C or the end of `--duration`). If Specter is killed, for example with `kill -9`, the kernel makes `strace` detach by itself on Linux, so the server is not left traced. The `docker`, `file` and `journal` sources read output that already exists and do not slow the target. The `Source:` line Specter prints when it attaches tells you which one is in use.
+- With `strace`, at 1,000 requests per second the server can no longer answer on time, so requests queue and latency grows by hundreds of milliseconds. At full speed throughput fell by about 98%.
+- With `ebpf`, the server keeps its rate at 100 and 1,000 requests per second, and the median latency rises by under 10%. The 1,000 requests per second result is only just under that line, and the runs with Specter varied a lot (from 1.29 to 1.86 ms), so treat it as "small", not as an exact figure. The 99th percentile went from 4.9 ms to 23 ms.
+- Every line was captured at 100 and 1,000 requests per second, with both engines (60,000 of 60,000).
+- At full speed, the `ebpf` engine captured 79% of the lines (509,403 of 646,084). Specter's own processing of each line (parsing, formatting and printing) used about 1.5 cores at 16,000 lines per second and could not keep up, so the buffer between the kernel and Specter filled and the kernel dropped writes. The target was never slowed by this. Specter counts the lost writes and prints `N writes were lost because the target wrote faster than Specter could read.`, so a loss is never silent. At 1,000 lines per second Specter used about 75% of one core, with either engine.
+
+Your server will give different numbers. Run the script on a copy of it, or on a machine like it, before deciding: `ENGINE=ebpf scripts/bench-overhead.sh` or `ENGINE=strace scripts/bench-overhead.sh`. The full reports are in [`test/bench/results/`](test/bench/results/). Two ways to limit the effect of `strace`: attach for a short time with `--duration 30s`, and use a source that does not slow the target when you can.
+
+The slowdown ends when Specter detaches (Ctrl+C or the end of `--duration`). If Specter is killed, for example with `kill -9`, the kernel removes the eBPF programs, and makes `strace` detach by itself, so the server is not left traced or hooked. The `docker`, `file` and `journal` sources read output that already exists and do not slow the target. The `Source:` line Specter prints when it attaches tells you which one is in use.
 
 ---
 
@@ -306,7 +320,8 @@ Running `specter <target>` on Windows or macOS stops with a message that says so
 
 ### Dependencies
 
-- **Runtime**: `lsof` (or `iproute2`/`ss`), `strace` (for PTY/terminal snooping), and optional `docker` CLI.
+- **Runtime**: `lsof` (or `iproute2`/`ss`), `strace` (for PTY/terminal snooping, and as the fallback when eBPF cannot run), and optional `docker` CLI.
+- **For the `ebpf` engine** (optional, and faster): Linux 5.8 or later, kernel type information at `/sys/kernel/btf/vmlinux`, and root or the capabilities `CAP_BPF` and `CAP_PERFMON`. Most current Ubuntu, Debian and Fedora kernels have the type information. The compiled kernel program is built into the `specter` binary, so no compiler is needed.
 - **Build**: Go 1.26 or higher.
 
 ### Kernel Permissions (`ptrace_scope`)
