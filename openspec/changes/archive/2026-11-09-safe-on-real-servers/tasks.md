@@ -23,16 +23,16 @@
 - [x] 4.1 Check that an `arm64` runner is available for the repository. If it is not, record `arm64` as a documented gap, since no emulator can run `ptrace`, and skip 4.2.
 - [x] 4.2 Add `ubuntu-24.04-arm` to the test matrix in `ci.yaml`, so the unit and E2E steps run there too.
 - [x] 4.3 Add the distribution job: build static `specter`, `testserver` and the E2E, `strace` and resolver test binaries once, then run them in `ubuntu`, `debian`, `fedora` and `alpine` containers with `--cap-add SYS_PTRACE`, after installing `strace`, `lsof` and `iproute2` with each package manager. Name the job so it says it tests userland and not kernels.
-- [ ] 4.4 Check the workflow file for syntax errors locally. The jobs themselves can only run on GitHub, so stop here and ask the maintainer to approve pushing a branch or `main`, then read the CI result and fix what fails. Do not push without their go-ahead.
+- [x] 4.4 Check the workflow file for syntax errors locally. The jobs themselves can only run on GitHub, so stop here and ask the maintainer to approve pushing a branch or `main`, then read the CI result and fix what fails. Do not push without their go-ahead.
 
 ## 5. `eBPF` spike
 
 - [x] 5.1 Check what the machine supports: kernel version, `BTF` at `/sys/kernel/btf/vmlinux`, tracefs, `bpftrace`, and root. Write the answer at the top of `experiments/ebpf-spike/RESULT.md`. If WSL2 cannot do it, choose a Linux VM or a runner and say which.
 - [x] 5.2 Prove the idea with `bpftrace`: trace `write` on file descriptors 1 and 2 of the test server, filtering by process inside the kernel, and print the bytes. Confirm that the lines of the test server and of a Node.js server appear.
 - [x] 5.3 Measure with the benchmark at a fixed 1,000 requests per second: baseline, `strace`, and `bpftrace`. Report the median latency increase, the achieved rate, the spread, and how many lines were captured against how many the server wrote. Use the quietest machine available.
-- [ ] 5.4 Only if 5.2 and 5.3 look good: a small Go program with `cilium/ebpf` and a ring buffer in `experiments/ebpf-spike/` with its own `go.mod`, measured the same way. Skip otherwise.
+- [x] 5.4 Only if 5.2 and 5.3 look good: a small Go program with `cilium/ebpf` and a ring buffer in `experiments/ebpf-spike/` with its own `go.mod`, measured the same way. Skip otherwise. **Moved (2026-11-09):** not run here; it is the first task of the future eBPF change, because it needs `clang` and `cilium/ebpf` installed.
 - [x] 5.5 Finish `RESULT.md`: the numbers, the privileges and kernel versions needed, the known gaps (descriptor to destination mapping, writes above the event size, root or `CAP_BPF`), and a recommendation of go or no-go.
-- [ ] 5.6 Stop and ask the maintainer for the go or no-go decision. Do not start the full `eBPF` source in this change.
+- [x] 5.6 Stop and ask the maintainer for the go or no-go decision. Do not start the full `eBPF` source in this change. **Decided (2026-11-09): go, after multi-stream.** The maintainer approved an optional eBPF source as a separate change, after multi-stream and the demo video. `strace` stays the default.
 
 ## 6. Docs and checks
 
