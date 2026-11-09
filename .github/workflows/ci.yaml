@@ -136,6 +136,108 @@ jobs:
             -e TESTSERVER_BIN=/work/bin/testserver \
             ${{ matrix.image }} sh /work/scripts/ci-distro-tests.sh
 
+  # The eBPF engine needs root and a kernel with type information, which the virtual machines of these runners have.
+  # SPECTER_REQUIRE_EBPF=1 makes a test that would skip for lack of eBPF fail instead, so the coverage cannot be lost
+  # in silence. The test programs are built as a normal user and only run as root.
+  ebpf:
+    name: eBPF engine as root (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, ubuntu-24.04-arm ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace lsof iproute2
+
+      - name: What this machine offers
+        run: |
+          uname -srm
+          ls -la /sys/kernel/btf/vmlinux || echo "NO BTF"
+
+      - name: Configure kernel ptrace permissions
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
+      - name: Build the test programs (as a normal user)
+        run: |
+          mkdir -p "$RUNNER_TEMP/ebpf"
+          go build -o "$RUNNER_TEMP/ebpf/specter" ./cmd/specter
+          go build -o "$RUNNER_TEMP/ebpf/testserver" ./test/e2e/testserver
+          go test -c -o "$RUNNER_TEMP/ebpf/e2e.test" ./test/e2e
+          go test -c -o "$RUNNER_TEMP/ebpf/ebpf.test" ./internal/source/ebpf
+
+      - name: Run the eBPF source tests as root
+        shell: bash
+        run: |
+          cd internal/source/ebpf
+          sudo "$RUNNER_TEMP/ebpf/ebpf.test" -test.v -test.timeout=5m | tee "$RUNNER_TEMP/ebpf/unit.log"
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/ebpf/unit.log"; then
+            echo "A test was skipped, so it proved nothing:"
+            grep -- '--- SKIP' "$RUNNER_TEMP/ebpf/unit.log"
+            exit 1
+          fi
+
+      - name: Run the E2E suite as root, with eBPF required
+        shell: bash
+        run: |
+          cd test/e2e
+          sudo env SPECTER_REQUIRE_EBPF=1 \
+            SPECTER_BIN="$RUNNER_TEMP/ebpf/specter" TESTSERVER_BIN="$RUNNER_TEMP/ebpf/testserver" \
+            "$RUNNER_TEMP/ebpf/e2e.test" -test.v -test.timeout=10m | tee "$RUNNER_TEMP/ebpf/e2e.log"
+          if grep -E -- '--- SKIP.*(ebpf|EBPF)' "$RUNNER_TEMP/ebpf/e2e.log"; then
+            echo "An eBPF test was skipped, so eBPF coverage was lost."
+            exit 1
+          fi
+
+  # The compiled BPF program is committed, so building needs no C compiler. This job regenerates it with clang 18
+  # (the version the committed files were made with) and fails if the result differs, which would mean the C source
+  # was changed without regenerating.
+  ebpf-generated:
+    name: Committed BPF program is current
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 llvm-18 libbpf-dev
+          sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang
+          clang --version
+
+      - name: Regenerate and compare
+        run: |
+          go generate ./internal/source/ebpf
+          git status --short internal/source/ebpf
+          if ! git diff --exit-code -- internal/source/ebpf; then
+            echo "The committed BPF files differ from the C source. Run: go generate ./internal/source/ebpf"
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain internal/source/ebpf)" ]; then
+            echo "Regenerating changed these files:"
+            git status --porcelain internal/source/ebpf
+            exit 1
+          fi
+
   build:
     name: Build & Cross-Compilation
     runs-on: ubuntu-latest

@@ -1,0 +1,88 @@
+name: Overhead benchmark
+
+# Measures how much Specter slows a server with each capture engine, on a native Linux virtual machine of GitHub's.
+# Both engines run one after the other on the same machine, so the comparison is fair. It runs only by hand or on
+# the ebpf-bench branch, never on main.
+#
+# The report is also written as a notice annotation, because job logs need a login to read and annotations do not:
+#   curl https://api.github.com/repos/<owner>/<repo>/check-runs/<id>/annotations
+on:
+  push:
+    branches: [ ebpf-bench ]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: Benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04 ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace lsof iproute2
+
+      - name: Build the programs (as a normal user)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bench"
+          go build -o "$RUNNER_TEMP/bench/specter" ./cmd/specter
+          go build -o "$RUNNER_TEMP/bench/testserver" ./test/e2e/testserver
+          go build -o "$RUNNER_TEMP/bench/loadgen" ./test/bench/loadgen
+          go build -o "$RUNNER_TEMP/bench/benchreport" ./test/bench/benchreport
+
+      - name: What this machine is
+        run: |
+          uname -srm
+          nproc
+          grep -m1 'model name' /proc/cpuinfo || true
+          ls -la /sys/kernel/btf/vmlinux || echo "NO BTF"
+          strace -V | head -n 1
+
+      - name: Benchmark the strace engine
+        shell: bash
+        run: |
+          sudo env ENGINE=strace OUT_DIR="$RUNNER_TEMP/bench/strace" \
+            SPECTER_BIN="$RUNNER_TEMP/bench/specter" TESTSERVER_BIN="$RUNNER_TEMP/bench/testserver" \
+            LOADGEN_BIN="$RUNNER_TEMP/bench/loadgen" BENCHREPORT_BIN="$RUNNER_TEMP/bench/benchreport" \
+            bash scripts/bench-overhead.sh | tee "$RUNNER_TEMP/bench/strace.txt"
+
+      - name: Benchmark the eBPF engine
+        shell: bash
+        run: |
+          sudo env ENGINE=ebpf OUT_DIR="$RUNNER_TEMP/bench/ebpf" \
+            SPECTER_BIN="$RUNNER_TEMP/bench/specter" TESTSERVER_BIN="$RUNNER_TEMP/bench/testserver" \
+            LOADGEN_BIN="$RUNNER_TEMP/bench/loadgen" BENCHREPORT_BIN="$RUNNER_TEMP/bench/benchreport" \
+            bash scripts/bench-overhead.sh | tee "$RUNNER_TEMP/bench/ebpf.txt"
+
+      - name: Publish the reports
+        if: always()
+        shell: bash
+        run: |
+          for engine in strace ebpf; do
+            f="$RUNNER_TEMP/bench/$engine.txt"
+            [ -f "$f" ] || continue
+            # A workflow command needs % and line breaks escaped
+            msg=$(sed -e 's/%/%25/g' -e 's/\r//g' "$f" | awk '{printf "%s%%0A", $0}')
+            echo "::notice title=bench $engine ${{ matrix.os }}::$msg"
+          done
+
+      - name: Keep the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: ${{ runner.temp }}/bench/
+          retention-days: 14
