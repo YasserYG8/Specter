@@ -182,10 +182,19 @@ jobs:
         shell: bash
         run: |
           cd internal/source/ebpf
-          sudo "$RUNNER_TEMP/ebpf/ebpf.test" -test.v -test.timeout=5m | tee "$RUNNER_TEMP/ebpf/unit.log"
+          set +e
+          sudo "$RUNNER_TEMP/ebpf/ebpf.test" -test.v -test.timeout=5m 2>&1 | tee "$RUNNER_TEMP/ebpf/unit.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            { echo "exit code $rc"; uname -r; grep -E -- '^(--- FAIL|FAIL|panic)|refused|cannot|verifier|not permitted|permission' "$RUNNER_TEMP/ebpf/unit.log" | head -n 25; echo "--- last lines:"; tail -n 20 "$RUNNER_TEMP/ebpf/unit.log"; } > "$RUNNER_TEMP/ebpf/unit.diag"
+            sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "eBPF source tests failed on $(uname -r)" "$RUNNER_TEMP/ebpf/unit.diag" 60
+            exit "$rc"
+          fi
           if grep -q -- '--- SKIP' "$RUNNER_TEMP/ebpf/unit.log"; then
             echo "A test was skipped, so it proved nothing:"
-            grep -- '--- SKIP' "$RUNNER_TEMP/ebpf/unit.log"
+            grep -- '--- SKIP' "$RUNNER_TEMP/ebpf/unit.log" | tee "$RUNNER_TEMP/ebpf/skips.txt"
+            sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "an eBPF source test was skipped on $(uname -r)" "$RUNNER_TEMP/ebpf/skips.txt" 20
             exit 1
           fi
 
@@ -225,18 +234,34 @@ jobs:
           clang --version
 
       - name: Regenerate and compare
+        shell: bash
         run: |
-          go generate ./internal/source/ebpf
-          git status --short internal/source/ebpf
-          if ! git diff --exit-code -- internal/source/ebpf; then
-            echo "The committed BPF files differ from the C source. Run: go generate ./internal/source/ebpf"
-            exit 1
+          set +e
+          git show HEAD:internal/source/ebpf/specter_bpfel.o > "$RUNNER_TEMP/committed.o"
+          go generate ./internal/source/ebpf 2>&1 | tee "$RUNNER_TEMP/gen.log"
+          rc=${PIPESTATUS[0]}
+          changed=$(git status --porcelain internal/source/ebpf)
+          if [ "$rc" -eq 0 ] && [ -z "$changed" ]; then
+            echo "The committed BPF files are current."
+            exit 0
           fi
-          if [ -n "$(git status --porcelain internal/source/ebpf)" ]; then
-            echo "Regenerating changed these files:"
-            git status --porcelain internal/source/ebpf
-            exit 1
-          fi
+          {
+            echo "go generate exit code: $rc"
+            clang --version | head -n 1
+            go version
+            dpkg -l libbpf-dev linux-libc-dev clang-18 llvm-18 2>/dev/null | awk '/^ii/ {print $2, $3}'
+            echo "changed files:"; echo "$changed"
+            echo "object sizes: committed $(stat -c %s "$RUNNER_TEMP/committed.o") regenerated $(stat -c %s internal/source/ebpf/specter_bpfel.o 2>/dev/null)"
+            echo "strings that differ (committed < > regenerated):"
+            diff <(strings -a "$RUNNER_TEMP/committed.o") <(strings -a internal/source/ebpf/specter_bpfel.o) | head -n 14
+            echo "generated Go file diff:"
+            git diff -- internal/source/ebpf/specter_bpfel.go | head -n 20
+            echo "generate output:"; tail -n 8 "$RUNNER_TEMP/gen.log"
+          } > "$RUNNER_TEMP/regen.diag" 2>&1
+          cat "$RUNNER_TEMP/regen.diag"
+          sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "BPF program is not current" "$RUNNER_TEMP/regen.diag" 60
+          echo "The committed BPF files differ from the C source. Run: go generate ./internal/source/ebpf"
+          exit 1
 
   build:
     name: Build & Cross-Compilation
