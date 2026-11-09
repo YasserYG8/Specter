@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -106,11 +107,18 @@ func startTestServer(t *testing.T, serverBin string, extraArgs ...string) (*serv
 	if err != nil {
 		t.Fatalf("failed to create server stdout pipe: %v", err)
 	}
-	cmd.Stderr = os.Stderr
+	// The server's stderr must be a pipe, like its stdout. If it inherited the test's own stderr, a run with stderr
+	// redirected to a file (go test 2>log, or a CI step) would make it a regular file, and Specter would then pick
+	// the file source instead of strace and capture nothing. The pipe is forwarded to the test's stderr.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("failed to create server stderr pipe: %v", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start test server: %v", err)
 	}
+	go func() { _, _ = io.Copy(os.Stderr, stderrPipe) }()
 
 	// Read startup synchronization line
 	portChan := make(chan int, 1)
