@@ -187,7 +187,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            { echo "exit code $rc"; uname -r; grep -E -- '^(--- FAIL|FAIL|panic)|refused|cannot|verifier|not permitted|permission|_test.go:|kernel 7|kernel 6|kernel 5|counters:' "$RUNNER_TEMP/ebpf/unit.log" | head -n 40; echo "--- last lines:"; tail -n 20 "$RUNNER_TEMP/ebpf/unit.log"; } > "$RUNNER_TEMP/ebpf/unit.diag"
+            { echo "exit code $rc"; uname -r; grep -E -- '^(--- FAIL|FAIL|panic)|refused|cannot|verifier|not permitted|permission|_test.go:|kernel 7|kernel 6|kernel 5|counters:' "$RUNNER_TEMP/ebpf/unit.log" | head -n 40 || true; echo "--- last lines:"; tail -n 20 "$RUNNER_TEMP/ebpf/unit.log"; } > "$RUNNER_TEMP/ebpf/unit.diag"
             sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "eBPF source tests failed on $(uname -r)" "$RUNNER_TEMP/ebpf/unit.diag" 60
             exit "$rc"
           fi
@@ -209,12 +209,14 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            { echo "exit code $rc on $(uname -r)"; grep -E -- '^\s*--- FAIL|^FAIL|panic|_test.go:[0-9]+:|Source:|\[specter' "$RUNNER_TEMP/ebpf/e2e.log" | head -n 45; } > "$RUNNER_TEMP/ebpf/e2e.diag"
+            { echo "exit code $rc on $(uname -r)"; grep -E -- '^\s*--- FAIL|^FAIL|panic|_test.go:[0-9]+:|Source:|\[specter' "$RUNNER_TEMP/ebpf/e2e.log" | head -n 45 || true; } > "$RUNNER_TEMP/ebpf/e2e.diag"
             sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "eBPF E2E tests failed on $(uname -r)" "$RUNNER_TEMP/ebpf/e2e.diag" 60
             exit "$rc"
           fi
-          if grep -E -- '--- SKIP.*(ebpf|EBPF)' "$RUNNER_TEMP/ebpf/e2e.log"; then
+          if grep -E -B3 -- '--- SKIP.*(ebpf|EBPF)' "$RUNNER_TEMP/ebpf/e2e.log" > "$RUNNER_TEMP/ebpf/e2e.skips"; then
             echo "An eBPF test was skipped, so eBPF coverage was lost."
+            cat "$RUNNER_TEMP/ebpf/e2e.skips"
+            sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "an eBPF E2E test was skipped on $(uname -r)" "$RUNNER_TEMP/ebpf/e2e.skips" 40
             exit 1
           fi
 

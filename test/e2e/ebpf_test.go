@@ -187,6 +187,8 @@ func TestE2E_EBPFProgramsAreRemovedAfterSIGKILL(t *testing.T) {
 	srv, cleanupServer := startTestServer(t, serverBin)
 	defer cleanupServer()
 
+	// The Specter of the previous test may still be on its way out: the kernel frees its programs shortly after
+	waitForCondition(t, 5*time.Second, func() bool { return loadedSpecterPrograms(t) == 0 })
 	if n := loadedSpecterPrograms(t); n != 0 {
 		t.Skipf("%d Specter BPF programs are loaded already (another Specter on this machine?)", n)
 	}
