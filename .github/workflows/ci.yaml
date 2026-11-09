@@ -8,11 +8,16 @@ on:
 
 jobs:
   test:
-    name: Test & Quality
-    runs-on: ubuntu-latest
+    name: Test & Quality (${{ matrix.os }}, Go ${{ matrix.go-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ ubuntu-latest ]
         go-version: [ '1.26', 'stable' ]
+        include:
+          # A real arm64 kernel: ptrace does not work under emulation, so this is the only way to run Specter on arm64
+          - os: ubuntu-24.04-arm
+            go-version: stable
 
     steps:
       - name: Checkout code
@@ -49,10 +54,87 @@ jobs:
           sudo usermod -a -G systemd-journal $USER || true
 
       - name: Run unit & stress tests (with race detector)
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./cmd/... ./internal/... ./test/stress/...
+        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./cmd/... ./internal/... ./test/stress/... ./test/bench/...
 
       - name: Run E2E integration tests
         run: go test -v -timeout=10m ./test/e2e/...
+
+  # The binaries for the distribution tests are built once here, statically, and every distribution runs the same files
+  distro-binaries:
+    name: Build static test binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Build static binaries
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p bin
+          go build -o bin/specter ./cmd/specter
+          go build -o bin/testserver ./test/e2e/testserver
+          go test -c -o bin/e2e.test ./test/e2e
+          go test -c -o bin/strace.test ./internal/source/strace
+          go test -c -o bin/resolver.test ./internal/resolver
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: distro-binaries
+          path: bin/
+          retention-days: 3
+
+  # This tests what differs between distributions: the strace version, the C library (Alpine uses musl) and the
+  # tools. Containers share the runner's kernel, so it does NOT test other kernels.
+  distros:
+    name: Distribution userland, not kernels (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    needs: distro-binaries
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            install: apt-get update -qq && apt-get install -y -qq strace lsof iproute2
+          - image: debian:12
+            install: apt-get update -qq && apt-get install -y -qq strace lsof iproute2
+          - image: fedora:41
+            install: dnf install -y -q strace lsof iproute
+          - image: alpine:3.21
+            install: apk add --no-cache strace lsof iproute2
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: distro-binaries
+          path: bin
+
+      - name: Configure kernel ptrace permissions
+        run: |
+          chmod +x bin/*
+          sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
+      - name: Run the tests in ${{ matrix.image }}
+        env:
+          INSTALL: ${{ matrix.install }}
+        run: |
+          docker run --rm --cap-add SYS_PTRACE \
+            -v "$PWD":/work \
+            -e INSTALL \
+            -e SPECTER_BIN=/work/bin/specter \
+            -e TESTSERVER_BIN=/work/bin/testserver \
+            ${{ matrix.image }} sh /work/scripts/ci-distro-tests.sh
 
   build:
     name: Build & Cross-Compilation
