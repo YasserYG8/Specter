@@ -3,3 +3,5 @@ install.sh text eol=lf
 
 # So are the helper scripts
 scripts/*.sh text eol=lf
+experiments/**/*.sh text eol=lf
+experiments/**/*.bt text eol=lf
