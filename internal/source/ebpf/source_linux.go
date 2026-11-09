@@ -43,6 +43,7 @@ type session struct {
 var statNames = []string{
 	"lost", "unreadable", "enter_followed", "dropped_by_rules", "call_stored", "exit_matched", "data_sent",
 	"ns_lookup_failed", "fork_by_followed", "fork_child_added", "fork_child_ns_not_found", "exit_removed", "fd_unknown",
+	"DIAG_enter_all", "DIAG_not_followed",
 }
 
 // counters returns the counters of the BPF program, summed over all CPUs, as one line of name=value. It is how a
@@ -65,6 +66,20 @@ func (c *session) counters() string {
 		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, total))
 	}
+	// The followed set and the IDs of the last write by a process that was not in it
+	var followed []string
+	var key uint32
+	var val specterFollowedProc
+	it := c.objs.Followed.Iterate()
+	for it.Next(&key, &val) {
+		followed = append(followed, fmt.Sprintf("%d:d%d", key, val.Depth))
+	}
+	var last [3]uint64
+	for i := range last {
+		_ = c.objs.LastOther.Lookup(uint32(i), &last[i])
+	}
+	parts = append(parts, fmt.Sprintf("followed=[%s]", strings.Join(followed, ",")),
+		fmt.Sprintf("last_other(ns_pid=%d ns_tgid=%d host=%d/%d)", last[0], last[1], last[2]>>32, last[2]&0xffffffff))
 	return strings.Join(parts, " ")
 }
 
