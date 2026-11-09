@@ -57,6 +57,10 @@ func httpGet(t *testing.T, url string) {
 }
 
 func TestE2E_ConcurrentWorkersLoseNoLines(t *testing.T) {
+	forEachEngine(t, runConcurrentWorkersLoseNoLines)
+}
+
+func runConcurrentWorkersLoseNoLines(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -142,7 +146,9 @@ func checkNumberedLines(t *testing.T, stdout, stderr *safeBuffer, workers, lines
 
 // TestE2E_ManyExistingWorkers starts more workers than the old limit of 16 before Specter attaches. Workers that
 // start after attaching are followed by strace -f, so only workers that already exist need their own -p argument.
-func TestE2E_ManyExistingWorkers(t *testing.T) {
+func TestE2E_ManyExistingWorkers(t *testing.T) { forEachEngine(t, runManyExistingWorkers) }
+
+func runManyExistingWorkers(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -174,7 +180,9 @@ func TestE2E_ManyExistingWorkers(t *testing.T) {
 	checkNumberedLines(t, stdout, stderr, workers, linesEach)
 }
 
-func TestE2E_LongLines(t *testing.T) {
+func TestE2E_LongLines(t *testing.T) { forEachEngine(t, runLongLines) }
+
+func runLongLines(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -236,6 +244,10 @@ func TestE2E_LongLines(t *testing.T) {
 // next to a helper that inherits the server's output. strace -f reports the writes of both; only the second one
 // reaches the server's output, so only that one may appear.
 func TestE2E_HelperWithPrivateOutputIsNotShown(t *testing.T) {
+	forEachEngine(t, runHelperWithPrivateOutputIsNotShown)
+}
+
+func runHelperWithPrivateOutputIsNotShown(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -272,7 +284,9 @@ func TestE2E_HelperWithPrivateOutputIsNotShown(t *testing.T) {
 	}
 }
 
-func TestE2E_WritevCaptured(t *testing.T) {
+func TestE2E_WritevCaptured(t *testing.T) { forEachEngine(t, runWritevCaptured) }
+
+func runWritevCaptured(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -297,7 +311,9 @@ func TestE2E_WritevCaptured(t *testing.T) {
 	}
 }
 
-func TestE2E_NoOutputNotice(t *testing.T) {
+func TestE2E_NoOutputNotice(t *testing.T) { forEachEngine(t, runNoOutputNotice) }
+
+func runNoOutputNotice(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -353,6 +369,10 @@ func TestE2E_NoOutputNotice(t *testing.T) {
 // libuv opened again from the terminal, not through fd 1. The test server opens /proc/self/fd/1 again and writes
 // through the new descriptor, and its stdout is a pipe, so the new descriptor leads to the same pipe.
 func TestE2E_ReopenedDescriptorIsCaptured(t *testing.T) {
+	forEachEngine(t, runReopenedDescriptorIsCaptured)
+}
+
+func runReopenedDescriptorIsCaptured(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")

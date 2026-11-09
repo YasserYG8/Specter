@@ -59,7 +59,9 @@ func TestE2E_SlowdownNoticeGoesToStderrOnce(t *testing.T) {
 }
 
 // --duration detaches after the time, with exit status 0, and leaves the target free and running.
-func TestE2E_DurationDetaches(t *testing.T) {
+func TestE2E_DurationDetaches(t *testing.T) { forEachEngine(t, runDurationDetaches) }
+
+func runDurationDetaches(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -98,7 +100,9 @@ func TestE2E_DurationDetaches(t *testing.T) {
 }
 
 // A target that ends before the time is over is reported as always: how it ended, and exit status 1.
-func TestE2E_TargetEndsBeforeDuration(t *testing.T) {
+func TestE2E_TargetEndsBeforeDuration(t *testing.T) { forEachEngine(t, runTargetEndsBeforeDuration) }
+
+func runTargetEndsBeforeDuration(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")

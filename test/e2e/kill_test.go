@@ -61,7 +61,7 @@ func straceFor(t *testing.T, pid int) []int {
 // The caller decides how it dies. It returns once strace is attached to the server.
 func startKillableSpecter(t *testing.T, specterBin string, srv *serverProcess, args ...string) (*exec.Cmd, *safeBuffer, *safeBuffer) {
 	t.Helper()
-	cmd := exec.Command(specterBin, append([]string{strconv.Itoa(srv.Port), "--no-color"}, args...)...)
+	cmd := exec.Command(specterBin, append(append([]string{strconv.Itoa(srv.Port), "--no-color"}, engineArgs()...), args...)...)
 	stdout, stderr := &safeBuffer{}, &safeBuffer{}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -85,9 +85,7 @@ func startKillableSpecter(t *testing.T, specterBin string, srv *serverProcess, a
 		}
 	})
 
-	if !waitForCondition(t, 30*time.Second, func() bool { return tracerPID(t, srv.PID) != 0 }) {
-		t.Fatalf("strace did not attach to PID %d. Stderr:\n%s", srv.PID, stderr.String())
-	}
+	waitAttached(t, srv.PID, stderr)
 	return cmd, stdout, stderr
 }
 

@@ -13,7 +13,9 @@ import (
 	"time"
 )
 
-func TestE2E_PIDFlagAttaches(t *testing.T) {
+func TestE2E_PIDFlagAttaches(t *testing.T) { forEachEngine(t, runPIDFlagAttaches) }
+
+func runPIDFlagAttaches(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")

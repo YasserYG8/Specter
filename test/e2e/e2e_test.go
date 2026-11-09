@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YasserYG8/Specter/internal/source/ebpf"
 	"github.com/YasserYG8/Specter/internal/source/strace"
 )
 
@@ -83,10 +84,71 @@ func getBinary(t *testing.T, envVar, pkgPath, binaryName string) string {
 	return outPath
 }
 
+// currentEngine is the capture engine the Specter commands of the running test use, as --source <engine>. It is
+// strace unless forEachEngine says otherwise, so that tests about strace itself behave the same on a machine
+// where Specter could pick eBPF by itself. "auto" leaves the choice to Specter.
+var currentEngine = "strace"
+
+// forEachEngine runs a capture test once with --source strace and once with --source ebpf, with the same expected
+// output. The eBPF run skips, with the reason, when this machine cannot run it, unless SPECTER_REQUIRE_EBPF=1, which
+// makes CI fail instead of losing the coverage in silence.
+func forEachEngine(t *testing.T, body func(t *testing.T)) {
+	t.Helper()
+	for _, name := range []string{"strace", "ebpf"} {
+		t.Run(name, func(t *testing.T) {
+			if name == "ebpf" {
+				requireEBPF(t)
+			}
+			previous := currentEngine
+			currentEngine = name
+			defer func() { currentEngine = previous }()
+			body(t)
+		})
+	}
+}
+
+// requireEBPF skips the test when the eBPF engine cannot run here: not Linux, a kernel older than 5.8, no kernel
+// type information, or not root. With SPECTER_REQUIRE_EBPF=1 it fails instead.
+func requireEBPF(t *testing.T) {
+	t.Helper()
+	err := ebpf.Available()
+	if err == nil {
+		return
+	}
+	if os.Getenv("SPECTER_REQUIRE_EBPF") == "1" {
+		t.Fatalf("SPECTER_REQUIRE_EBPF=1, but the eBPF engine cannot run here: %v", err)
+	}
+	t.Skipf("the eBPF engine cannot run here: %v", err)
+}
+
+// engineArgs is the --source argument for the current engine, or nothing when Specter should choose.
+func engineArgs() []string {
+	if currentEngine == "" || currentEngine == "auto" {
+		return nil
+	}
+	return []string{"--source", currentEngine}
+}
+
+// waitAttached waits until Specter is capturing. With strace that is when strace is the server's tracer. eBPF
+// leaves no tracer, so Specter's own Source: line is the sign, plus a moment for the programs to start.
+func waitAttached(t *testing.T, srvPID int, stderr *safeBuffer) {
+	t.Helper()
+	if currentEngine == "ebpf" {
+		if !waitForCondition(t, 30*time.Second, func() bool { return strings.Contains(stderr.String(), "Source:") }) {
+			t.Fatalf("Specter did not attach. Stderr:\n%s", stderr.String())
+		}
+		time.Sleep(1500 * time.Millisecond)
+		return
+	}
+	if !waitForCondition(t, 30*time.Second, func() bool { return tracerPID(t, srvPID) != 0 }) {
+		t.Fatalf("strace did not attach to PID %d. Stderr:\n%s", srvPID, stderr.String())
+	}
+}
+
 // specterCommand runs Specter so that canceling ctx interrupts it, like Ctrl+C. The default for
 // exec.CommandContext is SIGKILL, which leaves strace attached and blocks the next attach to that process.
 func specterCommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, bin, append(args, engineArgs()...)...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 10 * time.Second
 	return cmd
@@ -202,7 +264,9 @@ func waitForCondition(t *testing.T, timeout time.Duration, check func() bool) bo
 	return false
 }
 
-func TestE2E_PortAttachment(t *testing.T) {
+func TestE2E_PortAttachment(t *testing.T) { forEachEngine(t, runPortAttachment) }
+
+func runPortAttachment(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -251,7 +315,9 @@ func TestE2E_PortAttachment(t *testing.T) {
 	}
 }
 
-func TestE2E_MultilineErrorTrace(t *testing.T) {
+func TestE2E_MultilineErrorTrace(t *testing.T) { forEachEngine(t, runMultilineErrorTrace) }
+
+func runMultilineErrorTrace(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -300,7 +366,9 @@ func TestE2E_MultilineErrorTrace(t *testing.T) {
 	}
 }
 
-func TestE2E_FilteringFlags(t *testing.T) {
+func TestE2E_FilteringFlags(t *testing.T) { forEachEngine(t, runFilteringFlags) }
+
+func runFilteringFlags(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -457,7 +525,9 @@ func TestE2E_FilteringFlags(t *testing.T) {
 	})
 }
 
-func TestE2E_TreeTracer(t *testing.T) {
+func TestE2E_TreeTracer(t *testing.T) { forEachEngine(t, runTreeTracer) }
+
+func runTreeTracer(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -503,7 +573,9 @@ func TestE2E_TreeTracer(t *testing.T) {
 	}
 }
 
-func TestE2E_CleanDetachment(t *testing.T) {
+func TestE2E_CleanDetachment(t *testing.T) { forEachEngine(t, runCleanDetachment) }
+
+func runCleanDetachment(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -567,7 +639,9 @@ func TestE2E_CleanDetachment(t *testing.T) {
 	}
 }
 
-func TestE2E_TargetExitDetection(t *testing.T) {
+func TestE2E_TargetExitDetection(t *testing.T) { forEachEngine(t, runTargetExitDetection) }
+
+func runTargetExitDetection(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -638,7 +712,9 @@ func TestE2E_TargetExitDetection(t *testing.T) {
 	}
 }
 
-func TestE2E_TargetKilledIsReported(t *testing.T) {
+func TestE2E_TargetKilledIsReported(t *testing.T) { forEachEngine(t, runTargetKilledIsReported) }
+
+func runTargetKilledIsReported(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
@@ -667,7 +743,9 @@ func TestE2E_TargetKilledIsReported(t *testing.T) {
 	}
 }
 
-func TestE2E_PreExistingChildWorker(t *testing.T) {
+func TestE2E_PreExistingChildWorker(t *testing.T) { forEachEngine(t, runPreExistingChildWorker) }
+
+func runPreExistingChildWorker(t *testing.T) {
 	requireLinux(t)
 
 	specterBin := getBinary(t, "SPECTER_BIN", "github.com/YasserYG8/Specter/cmd/specter", "specter")
