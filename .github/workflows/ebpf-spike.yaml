@@ -1,0 +1,53 @@
+name: eBPF spike proofs
+
+# Task 1.5 of the ebpf-source change: run the spike's proofs as root on native Linux kernels (GitHub's virtual
+# machines), amd64 and arm64. It runs only on the proof branch or by hand, so it costs nothing on main.
+on:
+  push:
+    branches: [ ebpf-spike-proof ]
+  workflow_dispatch:
+
+jobs:
+  proofs:
+    name: Spike proofs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-24.04, ubuntu-24.04-arm ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: What this machine offers
+        run: |
+          uname -srm
+          ls -la /sys/kernel/btf/vmlinux || echo "NO BTF"
+          cat /proc/sys/kernel/unprivileged_bpf_disabled || true
+          grep -E 'CONFIG_(BPF_SYSCALL|DEBUG_INFO_BTF|FTRACE_SYSCALLS)=' "/boot/config-$(uname -r)" || true
+          id
+
+      - name: Build the test programs (as a normal user)
+        run: |
+          mkdir -p "$RUNNER_TEMP/spike"
+          go build -o "$RUNNER_TEMP/spike/testserver" ./test/e2e/testserver
+          cd experiments/ebpf-spike/ringbuf
+          go build -o "$RUNNER_TEMP/spike/writer" ./cmd/writer
+          go test -c -o "$RUNNER_TEMP/spike/ringbuf.test" .
+
+      - name: Run the proofs as root
+        run: |
+          cd experiments/ebpf-spike/ringbuf
+          sudo env WRITER_BIN="$RUNNER_TEMP/spike/writer" TESTSERVER_BIN="$RUNNER_TEMP/spike/testserver" \
+            "$RUNNER_TEMP/spike/ringbuf.test" -test.v -test.timeout=5m | tee "$RUNNER_TEMP/spike/proofs.log"
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/spike/proofs.log"; then
+            echo "A proof was skipped, so it proved nothing."
+            exit 1
+          fi
