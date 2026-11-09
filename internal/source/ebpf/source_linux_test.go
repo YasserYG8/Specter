@@ -152,8 +152,17 @@ func (c *capture) waitFor(timeout time.Duration, what string, pred func([]source
 		time.Sleep(20 * time.Millisecond)
 	}
 	got := c.snapshot()
-	c.t.Fatalf("timed out waiting for %s; got %d chunks: %s", what, len(got), describe(got))
+	c.t.Fatalf("timed out waiting for %s; got %d chunks: %s [kernel %s] [counters: %s]", what, len(got), describe(got), kernelRelease(), c.src.debugCounters())
 	return nil
+}
+
+// kernelRelease is the running kernel, which a failure on one machine and not another usually depends on.
+func kernelRelease() string {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func describe(chunks []source.Chunk) string {
@@ -319,7 +328,7 @@ func TestSource_OwnLogFileNoticeNamesTheFileOnce(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(notices) != 1 {
-		t.Fatalf("expected one notice, got %d: %v", len(notices), notices)
+		t.Fatalf("expected one notice, got %d: %v [kernel %s] [counters: %s]", len(notices), notices, kernelRelease(), src.debugCounters())
 	}
 	if want := "Target writes to its own log file " + logPath + ", which Specter does not follow."; !strings.HasPrefix(notices[0], want) {
 		t.Errorf("notice = %q", notices[0])
@@ -467,7 +476,7 @@ func TestSource_TellsHowManyWritesWereLost(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(notices) == 0 {
-		t.Fatal("no notice about lost writes")
+		t.Fatalf("no notice about lost writes [kernel %s] [counters: %s]", kernelRelease(), src.debugCounters())
 	}
 	if !strings.Contains(notices[0], "writes were lost because the target wrote faster than Specter could read.") {
 		t.Errorf("notice = %q", notices[0])
@@ -564,4 +573,29 @@ func TestSession_ReadingTheCounterWhileClosing(t *testing.T) {
 		t.Error("a closed session should not report a counter")
 	}
 	sess.close() // closing twice is harmless
+}
+
+// Each stage of a write counts itself in the BPF program. The counters are what tells a failure to capture from a
+// failure to read on a kernel where something behaves differently, so they have to count.
+func TestSource_CountersFollowEachStageOfAWrite(t *testing.T) {
+	requireBPF(t)
+	sh := startShell(t, drainedPipe(t), drainedPipe(t))
+	c := startCapture(t, Options{}, source.Target{PID: sh.pid})
+
+	sh.run("echo counted-line")
+	sh.run("echo shared | cat") // a child: the fork is counted too
+	c.waitFor(10*time.Second, "the lines", contains("counted-line\n"))
+	c.waitFor(10*time.Second, "the child's line", contains("shared\n"))
+
+	counters := c.src.debugCounters()
+	for _, name := range []string{"enter_followed", "call_stored", "exit_matched", "data_sent", "fork_by_followed", "fork_child_added"} {
+		if strings.Contains(counters, name+"=0 ") || strings.HasSuffix(counters, name+"=0") || !strings.Contains(counters, name+"=") {
+			t.Errorf("the counter %s did not count: %s", name, counters)
+		}
+	}
+	for _, name := range []string{"lost", "unreadable", "ns_lookup_failed", "fork_child_ns_not_found"} {
+		if !strings.Contains(counters, name+"=0") {
+			t.Errorf("the counter %s should be 0 here: %s", name, counters)
+		}
+	}
 }

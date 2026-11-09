@@ -187,7 +187,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            { echo "exit code $rc"; uname -r; grep -E -- '^(--- FAIL|FAIL|panic)|refused|cannot|verifier|not permitted|permission' "$RUNNER_TEMP/ebpf/unit.log" | head -n 25; echo "--- last lines:"; tail -n 20 "$RUNNER_TEMP/ebpf/unit.log"; } > "$RUNNER_TEMP/ebpf/unit.diag"
+            { echo "exit code $rc"; uname -r; grep -E -- '^(--- FAIL|FAIL|panic)|refused|cannot|verifier|not permitted|permission|_test.go:|kernel 7|kernel 6|kernel 5|counters:' "$RUNNER_TEMP/ebpf/unit.log" | head -n 40; echo "--- last lines:"; tail -n 20 "$RUNNER_TEMP/ebpf/unit.log"; } > "$RUNNER_TEMP/ebpf/unit.diag"
             sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "eBPF source tests failed on $(uname -r)" "$RUNNER_TEMP/ebpf/unit.diag" 60
             exit "$rc"
           fi
@@ -231,6 +231,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-18 llvm-18 libbpf-dev
           sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/llvm-strip-18 /usr/local/bin/llvm-strip
           clang --version
 
       - name: Regenerate and compare

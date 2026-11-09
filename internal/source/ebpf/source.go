@@ -39,6 +39,7 @@ type Source struct {
 	notifier     func(msg string)
 	exit         *source.ExitStatus // how the target ended, once the kernel has reported it
 	seenLogPaths map[string]bool
+	sess         interface{ counters() string } // the running session, kept for diagnostics (Linux only)
 }
 
 var _ source.Source = (*Source)(nil)

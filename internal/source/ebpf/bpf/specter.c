@@ -31,6 +31,24 @@
 #define MAX_IOV 16                       /* iovec entries of one writev that are read */
 #define MAX_PID_LEVELS 8
 
+/* Indexes of the counters in the stats map. They are kept in every build: a counter costs one map lookup on the
+ * paths of followed processes, and they are what tells a failure to capture from a failure to read, so they show
+ * where a write was lost when a new kernel behaves differently. */
+#define ST_LOST 0           /* events lost because the ring buffer was full */
+#define ST_UNREADABLE 1     /* writes whose bytes could not be read */
+#define ST_ENTER_FOLLOWED 2 /* writes by a followed process, seen at entry */
+#define ST_DROPPED 3        /* ... of which not output of the target, by the rules */
+#define ST_CALL_STORED 4    /* ... of which kept for the exit handler */
+#define ST_EXIT_MATCHED 5   /* write exits that found their stored call */
+#define ST_DATA_SENT 6      /* data events sent to the ring buffer */
+#define ST_NS_FAILED 7      /* the PID namespace lookup failed at write entry */
+#define ST_FORK_PARENT 8    /* forks by a followed process */
+#define ST_FORK_ADDED 9     /* children added to the followed set */
+#define ST_FORK_NO_NS 10    /* children whose ID in our namespace was not found */
+#define ST_EXIT_REMOVED 11  /* followed processes removed when they exited */
+#define ST_FD_UNKNOWN 12    /* writes whose file could not be identified */
+#define ST_COUNT 16
+
 #define S_IFMT 0170000
 #define S_IFREG 0100000
 
@@ -196,10 +214,10 @@ struct {
 	__type(value, struct scratch);
 } scratch_map SEC(".maps");
 
-/* stats[0]: events lost because the ring buffer was full; stats[1]: writes whose bytes could not be read */
+/* Counters, one set per CPU: see the ST_ indexes */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 2);
+	__uint(max_entries, ST_COUNT);
 	__type(key, __u32);
 	__type(value, __u64);
 } stats SEC(".maps");
@@ -260,7 +278,7 @@ static __always_inline void send_plain(__u32 kind, __u32 arg, __u32 tid, __u32 t
 	e.ino = ino;
 	e.ts_ns = bpf_ktime_get_ns();
 	if (bpf_ringbuf_output(&events, &e, sizeof(e), 0))
-		bump(0);
+		bump(ST_LOST);
 }
 
 /* The decision of the enter handlers: is this write output of the target? */
@@ -271,14 +289,19 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 	if (!cfg)
 		return 0;
 	struct bpf_pidns_info ids = {};
-	if (ns_ids(cfg, &ids))
+	if (ns_ids(cfg, &ids)) {
+		bump(ST_NS_FAILED);
 		return 0;
+	}
 	if (!bpf_map_lookup_elem(&followed, &ids.tgid))
 		return 0;
+	bump(ST_ENTER_FOLLOWED);
 
 	__u32 dev = 0, mode = 0;
 	__u64 ino = 0;
 	int known = fd_identity(fd, &dev, &ino, &mode) == 0;
+	if (!known)
+		bump(ST_FD_UNKNOWN);
 	int to_out = known && (same_as_out(cfg, 0, dev, ino) || same_as_out(cfg, 1, dev, ino));
 
 	__u32 kind;
@@ -287,8 +310,10 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 		 * stdout or stderr go, or when that cannot be told. */
 		if (ids.tgid == cfg->target_tgid || !known || to_out || cfg->out_known != 3)
 			kind = EV_DATA;
-		else
+		else {
+			bump(ST_DROPPED);
 			return 0;
+		}
 	} else {
 		/* Another descriptor counts when it leads where the target's stdout or stderr lead, which is how Node.js
 		 * writes to a terminal. /dev/null never counts. A regular file is the target's own log file. */
@@ -297,8 +322,10 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 			kind = EV_DATA;
 		else if (known && (mode & S_IFMT) == S_IFREG)
 			kind = EV_FILE;
-		else
+		else {
+			bump(ST_DROPPED);
 			return 0;
+		}
 	}
 
 	struct call c = {};
@@ -314,6 +341,7 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 	c.is_vec = is_vec;
 	__u64 id = bpf_get_current_pid_tgid();
 	bpf_map_update_elem(&calls, &id, &c, BPF_ANY);
+	bump(ST_CALL_STORED);
 	return 0;
 }
 
@@ -353,15 +381,16 @@ __noinline __u32 emit_range(struct scratch *s, __u64 base, __u32 len)
 		if (n > CHUNK)
 			n = CHUNK;
 		if (bpf_probe_read_user(s->data, n, (void *)(base + sent))) {
-			bump(1);
+			bump(ST_UNREADABLE);
 			break;
 		}
 		s->h.len = n;
 		s->h.ts_ns = bpf_ktime_get_ns();
 		if (bpf_ringbuf_output(&events, s, sizeof(s->h) + n, 0)) {
-			bump(0);
+			bump(ST_LOST);
 			break;
 		}
+		bump(ST_DATA_SENT);
 		sent += n;
 	}
 	return sent;
@@ -436,6 +465,7 @@ static __always_inline int handle_exit(long ret)
 	struct call *found = bpf_map_lookup_elem(&calls, &id);
 	if (!found)
 		return 0;
+	bump(ST_EXIT_MATCHED);
 	struct call c = *found;
 	bpf_map_delete_elem(&calls, &id);
 
@@ -485,6 +515,7 @@ int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child)
 	struct followed_proc *pp = bpf_map_lookup_elem(&followed, &ids.tgid);
 	if (!pp)
 		return 0;
+	bump(ST_FORK_PARENT);
 	if (BPF_CORE_READ(child, tgid) == BPF_CORE_READ(parent, tgid))
 		return 0; /* a new thread, not a new process */
 	if (pp->depth + 1 > cfg->max_depth)
@@ -510,9 +541,11 @@ int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child)
 		if (BPF_CORE_READ(ns, ns.inum) == cfg->ns_ino) {
 			__u32 nr = BPF_CORE_READ(up, nr);
 			bpf_map_update_elem(&followed, &nr, &add, BPF_ANY);
-			break;
+			bump(ST_FORK_ADDED);
+			return 0;
 		}
 	}
+	bump(ST_FORK_NO_NS);
 	return 0;
 }
 
@@ -535,6 +568,7 @@ int BPF_PROG(on_exit, struct task_struct *p)
 	if (!bpf_map_lookup_elem(&followed, &ids.tgid))
 		return 0;
 	bpf_map_delete_elem(&followed, &ids.tgid);
+	bump(ST_EXIT_REMOVED);
 
 	if (ids.tgid == cfg->target_tgid)
 		send_plain(EV_EXIT, (__u32)BPF_CORE_READ(p, exit_code), ids.pid, ids.tgid, 0, 0, 0, 0);

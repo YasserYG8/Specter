@@ -39,6 +39,35 @@ type session struct {
 	closed bool
 }
 
+// statNames are the counters of the BPF program, in the order of the ST_ indexes in bpf/specter.c.
+var statNames = []string{
+	"lost", "unreadable", "enter_followed", "dropped_by_rules", "call_stored", "exit_matched", "data_sent",
+	"ns_lookup_failed", "fork_by_followed", "fork_child_added", "fork_child_ns_not_found", "exit_removed", "fd_unknown",
+}
+
+// counters returns the counters of the BPF program, summed over all CPUs, as one line of name=value. It is how a
+// failure to capture is told from a failure to read: each stage of a write counts itself.
+func (c *session) counters() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return "(session closed)"
+	}
+	var parts []string
+	for i, name := range statNames {
+		var perCPU []uint64
+		if err := c.objs.Stats.Lookup(uint32(i), &perCPU); err != nil {
+			return fmt.Sprintf("(cannot read counters: %v)", err)
+		}
+		var total uint64
+		for _, v := range perCPU {
+			total += v
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d", name, total))
+	}
+	return strings.Join(parts, " ")
+}
+
 // close detaches the programs and releases everything. The kernel does the same on its own when Specter exits,
 // even when it is killed, because the programs, links and maps belong to descriptors that Specter holds.
 func (c *session) close() {
@@ -89,6 +118,7 @@ func (s *Source) Start(ctx context.Context, target source.Target) (<-chan source
 	}
 	s.mu.Lock()
 	s.stop = sess.close
+	s.sess = sess
 	s.mu.Unlock()
 
 	go func() {
@@ -333,4 +363,15 @@ func (s *Source) watchLost(sess *session, done <-chan struct{}) {
 			s.notify(msg)
 		}
 	}
+}
+
+// debugCounters is the counters of the running session, for tests and diagnostics. It is empty before Start.
+func (s *Source) debugCounters() string {
+	s.mu.Lock()
+	sess := s.sess
+	s.mu.Unlock()
+	if sess == nil {
+		return ""
+	}
+	return sess.counters()
 }
