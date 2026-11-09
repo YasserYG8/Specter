@@ -202,9 +202,17 @@ jobs:
         shell: bash
         run: |
           cd test/e2e
+          set +e
           sudo env SPECTER_REQUIRE_EBPF=1 \
             SPECTER_BIN="$RUNNER_TEMP/ebpf/specter" TESTSERVER_BIN="$RUNNER_TEMP/ebpf/testserver" \
-            "$RUNNER_TEMP/ebpf/e2e.test" -test.v -test.timeout=10m | tee "$RUNNER_TEMP/ebpf/e2e.log"
+            "$RUNNER_TEMP/ebpf/e2e.test" -test.v -test.timeout=10m 2>&1 | tee "$RUNNER_TEMP/ebpf/e2e.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            { echo "exit code $rc on $(uname -r)"; grep -E -- '^\s*--- FAIL|^FAIL|panic|_test.go:[0-9]+:|Source:|\[specter' "$RUNNER_TEMP/ebpf/e2e.log" | head -n 45; } > "$RUNNER_TEMP/ebpf/e2e.diag"
+            sh "$GITHUB_WORKSPACE/scripts/ci-annotate.sh" "eBPF E2E tests failed on $(uname -r)" "$RUNNER_TEMP/ebpf/e2e.diag" 60
+            exit "$rc"
+          fi
           if grep -E -- '--- SKIP.*(ebpf|EBPF)' "$RUNNER_TEMP/ebpf/e2e.log"; then
             echo "An eBPF test was skipped, so eBPF coverage was lost."
             exit 1

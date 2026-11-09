@@ -19,8 +19,7 @@ import (
 
 // specterPrograms are the names of the BPF programs that Specter loads.
 var specterPrograms = map[string]bool{
-	"on_write_enter": true, "on_write_exit": true, "on_writev_enter": true, "on_writev_exit": true,
-	"on_fork": true, "on_exit": true,
+	"on_sys_enter": true, "on_sys_exit": true, "on_fork": true, "on_exit": true,
 }
 
 // loadedSpecterPrograms counts the loaded BPF programs that have one of Specter's names.
