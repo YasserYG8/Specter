@@ -278,3 +278,19 @@ func TestRingBytesFrom(t *testing.T) {
 		}
 	}
 }
+
+func TestSyscallNumbers(t *testing.T) {
+	w, v, ok := syscallNumbers("amd64")
+	if !ok || w != 1 || v != 20 {
+		t.Errorf("amd64: write %d writev %d ok %v, want 1 20 true", w, v, ok)
+	}
+	w, v, ok = syscallNumbers("arm64")
+	if !ok || w != 64 || v != 66 {
+		t.Errorf("arm64: write %d writev %d ok %v, want 64 66 true", w, v, ok)
+	}
+	for _, arch := range []string{"riscv64", "386", "ppc64le", ""} {
+		if _, _, ok := syscallNumbers(arch); ok {
+			t.Errorf("%q should not be supported", arch)
+		}
+	}
+}

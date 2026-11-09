@@ -29,6 +29,7 @@ const (
 	ReasonOldKernel
 	ReasonNoBTF
 	ReasonNoPrivileges
+	ReasonArch       // an architecture whose system call numbers the engine does not know
 	ReasonLoadFailed // the checks passed, but the kernel refused to load or attach the program
 )
 
@@ -49,6 +50,7 @@ func (u *Unavailable) Unwrap() error { return u.Err }
 // environment is everything the availability check reads, so tests can give any machine.
 type environment struct {
 	goos          string
+	goarch        string // amd64 or arm64 are the architectures the engine supports
 	kernelRelease string // as uname -r prints it, for example "6.8.0-60-generic"
 	btfPresent    bool   // /sys/kernel/btf/vmlinux exists
 	capEff        uint64 // the effective capability set of this process
@@ -63,6 +65,15 @@ func checkAvailable(env environment) error {
 			Notice:      "eBPF needs Linux.",
 			Explanation: "eBPF needs Linux, and this system is " + env.goos + ".",
 			Remedy:      "Run Specter on Linux. On Windows, run it inside WSL2.",
+		}
+	}
+
+	if _, _, known := syscallNumbers(env.goarch); !known {
+		return &Unavailable{
+			Reason:      ReasonArch,
+			Notice:      fmt.Sprintf("eBPF supports amd64 and arm64 (this machine is %s).", env.goarch),
+			Explanation: fmt.Sprintf("The eBPF source supports amd64 and arm64, and this machine is %s.", env.goarch),
+			Remedy:      "Leave out --source ebpf to use strace.",
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -181,6 +182,18 @@ func (s *Source) open(target source.Target) (*session, error) {
 		spec.Maps["events"].MaxEntries = s.opts.RingBytes
 	}
 
+	// The numbers of the write and writev system calls depend on the architecture
+	writeNr, writevNr, ok := syscallNumbers(runtime.GOARCH)
+	if !ok {
+		return nil, loadFailed(fmt.Errorf("the eBPF source does not know the system call numbers of %s", runtime.GOARCH))
+	}
+	if err := spec.Variables["nr_write"].Set(writeNr); err != nil {
+		return nil, loadFailed(fmt.Errorf("cannot set the number of write: %w", err))
+	}
+	if err := spec.Variables["nr_writev"].Set(writevNr); err != nil {
+		return nil, loadFailed(fmt.Errorf("cannot set the number of writev: %w", err))
+	}
+
 	sess := &session{}
 	if err := spec.LoadAndAssign(&sess.objs, nil); err != nil {
 		var ve *cebpf.VerifierError
@@ -226,16 +239,9 @@ func (s *Source) open(target source.Target) (*session, error) {
 		name string
 		do   func() error
 	}{
-		{"sys_exit_write", func() error { return attach(link.Tracepoint("syscalls", "sys_exit_write", sess.objs.OnWriteExit, nil)) }},
-		{"sys_exit_writev", func() error {
-			return attach(link.Tracepoint("syscalls", "sys_exit_writev", sess.objs.OnWritevExit, nil))
-		}},
-		{"sys_enter_write", func() error {
-			return attach(link.Tracepoint("syscalls", "sys_enter_write", sess.objs.OnWriteEnter, nil))
-		}},
-		{"sys_enter_writev", func() error {
-			return attach(link.Tracepoint("syscalls", "sys_enter_writev", sess.objs.OnWritevEnter, nil))
-		}},
+		// The raw_syscalls tracepoints, not the per-syscall ones: see bpf/specter.c
+		{"raw_syscalls:sys_exit", func() error { return attach(link.Tracepoint("raw_syscalls", "sys_exit", sess.objs.OnSysExit, nil)) }},
+		{"raw_syscalls:sys_enter", func() error { return attach(link.Tracepoint("raw_syscalls", "sys_enter", sess.objs.OnSysEnter, nil)) }},
 		{"sched_process_fork", func() error { return attach(link.AttachTracing(link.TracingOptions{Program: sess.objs.OnFork})) }},
 		{"sched_process_exit", func() error { return attach(link.AttachTracing(link.TracingOptions{Program: sess.objs.OnExit})) }},
 	}

@@ -101,7 +101,10 @@ struct task_struct {
 };
 #pragma clang attribute pop
 
-/* Layouts of the syscall tracepoint contexts (see /sys/kernel/tracing/events/syscalls/sys_enter_write/format). */
+/* Layouts of the raw_syscalls tracepoint contexts (see /sys/kernel/tracing/events/raw_syscalls/sys_enter/format).
+ * Those tracepoints fire for every system call and carry its number and its arguments, decoded, on both amd64 and
+ * arm64. The per-syscall tracepoints (syscalls:sys_enter_write) are not used: on Linux 7.0 they miss the writes of
+ * processes that were already running when the program was attached, which is every target Specter attaches to. */
 struct sys_enter_ctx {
 	__u64 common;
 	long id;
@@ -363,16 +366,19 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_write")
-int on_write_enter(struct sys_enter_ctx *ctx)
-{
-	return handle_enter((__u32)ctx->args[0], ctx->args[1], ctx->args[2], 0);
-}
+/* The numbers of the write and writev system calls, which differ by architecture. Go sets them before loading, so
+ * the program compares a constant and a call of any other system call costs a few instructions. */
+volatile const __u32 nr_write = 1;   /* x86-64: 1, arm64: 64 */
+volatile const __u32 nr_writev = 20; /* x86-64: 20, arm64: 66 */
 
-SEC("tracepoint/syscalls/sys_enter_writev")
-int on_writev_enter(struct sys_enter_ctx *ctx)
+SEC("tracepoint/raw_syscalls/sys_enter")
+int on_sys_enter(struct sys_enter_ctx *ctx)
 {
-	return handle_enter((__u32)ctx->args[0], ctx->args[1], ctx->args[2], 1);
+	if (ctx->id == nr_write)
+		return handle_enter((__u32)ctx->args[0], ctx->args[1], ctx->args[2], 0);
+	if (ctx->id == nr_writev)
+		return handle_enter((__u32)ctx->args[0], ctx->args[1], ctx->args[2], 1);
+	return 0;
 }
 
 /*
@@ -505,15 +511,11 @@ static __always_inline int handle_exit(long ret)
 	return 0;
 }
 
-SEC("tracepoint/syscalls/sys_exit_write")
-int on_write_exit(struct sys_exit_ctx *ctx)
+SEC("tracepoint/raw_syscalls/sys_exit")
+int on_sys_exit(struct sys_exit_ctx *ctx)
 {
-	return handle_exit(ctx->ret);
-}
-
-SEC("tracepoint/syscalls/sys_exit_writev")
-int on_writev_exit(struct sys_exit_ctx *ctx)
-{
+	if (ctx->id != nr_write && ctx->id != nr_writev)
+		return 0;
 	return handle_exit(ctx->ret);
 }
 

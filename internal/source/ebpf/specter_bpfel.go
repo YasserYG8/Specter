@@ -76,20 +76,20 @@ type specterScratch struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	specterMapCalls          = "calls"
-	specterMapConfigMap      = "config_map"
-	specterMapEvents         = "events"
-	specterMapFollowed       = "followed"
-	specterMapLastOther      = "last_other"
-	specterMapScratchMap     = "scratch_map"
-	specterMapSeenFiles      = "seen_files"
-	specterMapStats          = "stats"
-	specterProgOnExit        = "on_exit"
-	specterProgOnFork        = "on_fork"
-	specterProgOnWriteEnter  = "on_write_enter"
-	specterProgOnWriteExit   = "on_write_exit"
-	specterProgOnWritevEnter = "on_writev_enter"
-	specterProgOnWritevExit  = "on_writev_exit"
+	specterMapCalls       = "calls"
+	specterMapConfigMap   = "config_map"
+	specterMapEvents      = "events"
+	specterMapFollowed    = "followed"
+	specterMapLastOther   = "last_other"
+	specterMapScratchMap  = "scratch_map"
+	specterMapSeenFiles   = "seen_files"
+	specterMapStats       = "stats"
+	specterProgOnExit     = "on_exit"
+	specterProgOnFork     = "on_fork"
+	specterProgOnSysEnter = "on_sys_enter"
+	specterProgOnSysExit  = "on_sys_exit"
+	specterVarNrWrite     = "nr_write"
+	specterVarNrWritev    = "nr_writev"
 )
 
 // loadSpecter returns the embedded CollectionSpec for specter.
@@ -134,12 +134,10 @@ type specterSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type specterProgramSpecs struct {
-	OnExit        *ebpf.ProgramSpec `ebpf:"on_exit"`
-	OnFork        *ebpf.ProgramSpec `ebpf:"on_fork"`
-	OnWriteEnter  *ebpf.ProgramSpec `ebpf:"on_write_enter"`
-	OnWriteExit   *ebpf.ProgramSpec `ebpf:"on_write_exit"`
-	OnWritevEnter *ebpf.ProgramSpec `ebpf:"on_writev_enter"`
-	OnWritevExit  *ebpf.ProgramSpec `ebpf:"on_writev_exit"`
+	OnExit     *ebpf.ProgramSpec `ebpf:"on_exit"`
+	OnFork     *ebpf.ProgramSpec `ebpf:"on_fork"`
+	OnSysEnter *ebpf.ProgramSpec `ebpf:"on_sys_enter"`
+	OnSysExit  *ebpf.ProgramSpec `ebpf:"on_sys_exit"`
 }
 
 // specterMapSpecs contains maps before they are loaded into the kernel.
@@ -160,6 +158,8 @@ type specterMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type specterVariableSpecs struct {
+	NrWrite  *ebpf.VariableSpec `ebpf:"nr_write"`
+	NrWritev *ebpf.VariableSpec `ebpf:"nr_writev"`
 }
 
 // specterObjects contains all objects after they have been loaded into the kernel.
@@ -209,28 +209,26 @@ func (m *specterMaps) Close() error {
 //
 // It can be passed to loadSpecterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type specterVariables struct {
+	NrWrite  *ebpf.Variable `ebpf:"nr_write"`
+	NrWritev *ebpf.Variable `ebpf:"nr_writev"`
 }
 
 // specterPrograms contains all programs after they have been loaded into the kernel.
 //
 // It can be passed to loadSpecterObjects or ebpf.CollectionSpec.LoadAndAssign.
 type specterPrograms struct {
-	OnExit        *ebpf.Program `ebpf:"on_exit"`
-	OnFork        *ebpf.Program `ebpf:"on_fork"`
-	OnWriteEnter  *ebpf.Program `ebpf:"on_write_enter"`
-	OnWriteExit   *ebpf.Program `ebpf:"on_write_exit"`
-	OnWritevEnter *ebpf.Program `ebpf:"on_writev_enter"`
-	OnWritevExit  *ebpf.Program `ebpf:"on_writev_exit"`
+	OnExit     *ebpf.Program `ebpf:"on_exit"`
+	OnFork     *ebpf.Program `ebpf:"on_fork"`
+	OnSysEnter *ebpf.Program `ebpf:"on_sys_enter"`
+	OnSysExit  *ebpf.Program `ebpf:"on_sys_exit"`
 }
 
 func (p *specterPrograms) Close() error {
 	return _SpecterClose(
 		p.OnExit,
 		p.OnFork,
-		p.OnWriteEnter,
-		p.OnWriteExit,
-		p.OnWritevEnter,
-		p.OnWritevExit,
+		p.OnSysEnter,
+		p.OnSysExit,
 	)
 }
 

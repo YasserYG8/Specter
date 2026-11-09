@@ -18,7 +18,7 @@ func Available() error {
 }
 
 func realEnvironment() environment {
-	env := environment{goos: runtime.GOOS}
+	env := environment{goos: runtime.GOOS, goarch: runtime.GOARCH}
 
 	var uts unix.Utsname
 	if err := unix.Uname(&uts); err == nil {

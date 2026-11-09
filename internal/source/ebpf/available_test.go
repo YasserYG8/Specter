@@ -16,7 +16,7 @@ func capSet(caps ...uint) uint64 {
 }
 
 func TestCheckAvailable(t *testing.T) {
-	good := environment{goos: "linux", kernelRelease: "6.8.0-60-generic", btfPresent: true, capEff: capSet(capSysAdmin)}
+	good := environment{goos: "linux", goarch: "amd64", kernelRelease: "6.8.0-60-generic", btfPresent: true, capEff: capSet(capSysAdmin)}
 
 	cases := []struct {
 		name       string
@@ -37,6 +37,8 @@ func TestCheckAvailable(t *testing.T) {
 		{"kernel 4.19", func(e environment) environment { e.kernelRelease = "4.19.0"; return e }, ReasonOldKernel, false, "this kernel is 4.19"},
 		{"an unreadable kernel version", func(e environment) environment { e.kernelRelease = ""; return e }, ReasonOldKernel, false, "this kernel is unknown"},
 		{"no kernel type information", func(e environment) environment { e.btfPresent = false; return e }, ReasonNoBTF, false, "/sys/kernel/btf/vmlinux"},
+		{"arm64 is supported", func(e environment) environment { e.goarch = "arm64"; return e }, 0, true, ""},
+		{"riscv64 is not", func(e environment) environment { e.goarch = "riscv64"; return e }, ReasonArch, false, "eBPF supports amd64 and arm64 (this machine is riscv64)."},
 		{"not Linux", func(e environment) environment { e.goos = "windows"; return e }, ReasonNotLinux, false, "eBPF needs Linux."},
 		{"macOS", func(e environment) environment { e.goos = "darwin"; return e }, ReasonNotLinux, false, "eBPF needs Linux."},
 	}
@@ -72,7 +74,7 @@ func TestCheckAvailable(t *testing.T) {
 // The user can fix the system, then the kernel, then the kernel's type information, then privileges. The one
 // reported is the first of these that is wrong, so that "run with sudo" is never advice that cannot help.
 func TestCheckAvailable_ReportsTheFirstThingToFix(t *testing.T) {
-	env := environment{goos: "linux", kernelRelease: "5.4.0", btfPresent: false, capEff: 0}
+	env := environment{goos: "linux", goarch: "amd64", kernelRelease: "5.4.0", btfPresent: false, capEff: 0}
 	var u *Unavailable
 	if err := checkAvailable(env); !errors.As(err, &u) || u.Reason != ReasonOldKernel {
 		t.Errorf("an old kernel comes first, got %v", err)

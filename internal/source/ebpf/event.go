@@ -190,3 +190,16 @@ func (l *lostTracker) next(total uint64) (string, bool) {
 	l.reported = total
 	return msg, true
 }
+
+// syscallNumbers returns the numbers of the write and writev system calls on an architecture, which the BPF program
+// compares with the number of each system call it sees. They differ between amd64 and arm64. The second result is
+// false for an architecture the engine does not support.
+func syscallNumbers(goarch string) (write, writev uint32, ok bool) {
+	switch goarch {
+	case "amd64":
+		return 1, 20, true
+	case "arm64":
+		return 64, 66, true
+	}
+	return 0, 0, false
+}
