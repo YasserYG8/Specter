@@ -1,0 +1,32 @@
+#!/usr/bin/env bpftrace
+/*
+ * capture.bt: print what one process writes to its stdout or stderr, using an eBPF program.
+ *
+ *   BPFTRACE_MAX_STRLEN=200 bpftrace capture.bt <process name>   (for example: testserver, node)
+ *
+ * The filter runs inside the kernel: only write() calls of processes with that name (all their threads) on file
+ * descriptors 1 and 2 reach user space. Every other system call of the target costs the target nothing, which is
+ * the difference from strace, that stops the target at each of them.
+ *
+ * Spike only. Known gaps, on purpose: no writev, no writes through other descriptors (reopened terminals), and
+ * str() stops at the first NUL byte and at 200 bytes (the most bpftrace allows: strings live on the 512-byte BPF
+ * stack). It filters by process name, not by PID: inside WSL2 the PID that eBPF sees is the host's, not the one
+ * the distribution shows, so `pid == N` never matches there. On native Linux, `pid == $1` works.
+ */
+tracepoint:syscalls:sys_enter_write
+/comm == str($1) && (args->fd == 1 || args->fd == 2)/
+{
+	@writes = count();
+	@bytes = sum(args->count);
+	printf("%s", str(args->buf, args->count));
+}
+
+END
+{
+	printf("\n[capture.bt] write calls seen: ");
+	print(@writes);
+	printf("[capture.bt] bytes written: ");
+	print(@bytes);
+	clear(@writes);
+	clear(@bytes);
+}

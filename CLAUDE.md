@@ -11,8 +11,8 @@ go build -o specter ./cmd/specter             # build
 gofmt -l .                                    # CI fails if this lists any file
 go vet ./...
 
-go test ./cmd/... ./internal/... ./test/stress/...               # unit and stress tests
-go test -race ./cmd/... ./internal/... ./test/stress/...         # as CI runs them (-race needs cgo)
+go test ./cmd/... ./internal/... ./test/stress/... ./test/bench/...  # unit, stress and benchmark-tool tests
+go test -race ./cmd/... ./internal/... ./test/stress/... ./test/bench/...  # as CI runs them (-race needs cgo)
 go test -timeout=10m ./test/e2e/...                              # live E2E
 go test ./internal/pipeline -run TestName -v                     # single test
 go test ./test/e2e -run TestE2E_PortAttachment -v                # single E2E test
@@ -26,8 +26,9 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 ## Platform constraints
 
 - Development happens on Windows, but the tool only runs on Linux or WSL2. `RunE` in `cmd/specter/main.go` returns an error on any other OS.
-- The code still has to compile for Windows and macOS: CI cross-compiles both to check portability, but releases (GoReleaser) publish Linux binaries only, since Specter cannot attach on those systems. The repo has no `//go:build` tags, so keep code portable or add tags deliberately.
+- The code still has to compile for Windows and macOS: CI cross-compiles both to check portability, but releases (GoReleaser) publish Linux binaries only, since Specter cannot attach on those systems. The only build tags are in `internal/source/strace/spawn_linux.go` and `spawn_other.go` (the parent-death signal that makes `strace` detach when Specter is killed, which exists only on Linux); elsewhere keep code portable, or add tags deliberately and a stub for the other systems.
 - E2E tests skip themselves (not fail) when not on Linux, when `strace` is missing, or when ptrace is restricted. A passing run on Windows says nothing about them, so run them in WSL2 with `strace` and `lsof` installed and `kernel.yama.ptrace_scope=0`.
+- To measure how much Specter slows a server, run `scripts/bench-overhead.sh` in WSL2 or on Linux as root (see its header; `READER=bpftrace` measures the eBPF spike in `experiments/ebpf-spike/`). Past reports are in `test/bench/results/`.
 - E2E tests compile their own binaries, or use prebuilt ones from `SPECTER_BIN` and `TESTSERVER_BIN`.
 - For manual testing in WSL2, `python3 test_server.py` listens on port 8080 and emits JSON logs on stdout. `GET /error` writes a traceback to stderr. Then run `specter 8080`.
 

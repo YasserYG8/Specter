@@ -22,6 +22,8 @@
 #   FORMAT [text]    text or markdown
 #   OUT_DIR []       keep the raw results here; by default they are deleted
 #   SPECTER_FLAGS [] extra flags for specter, for example "--tree"
+#   READER [specter] "bpftrace" measures the eBPF reader of the spike (experiments/ebpf-spike) in place of Specter.
+#                    It needs bpftrace and root. The report then says "bpftrace" where it says "Specter".
 set -euo pipefail
 
 RUNS=${RUNS:-5}
@@ -33,6 +35,7 @@ CONNS=${CONNS:-64}
 FORMAT=${FORMAT:-text}
 OUT_DIR=${OUT_DIR:-}
 SPECTER_FLAGS=${SPECTER_FLAGS:-}
+READER=${READER:-specter}
 
 die() {
   echo "bench-overhead: $*" >&2
@@ -42,12 +45,18 @@ die() {
 # ---- checks ---------------------------------------------------------------------------------------------------
 
 [ "$(uname -s)" = "Linux" ] || die "this needs Linux: Specter attaches with ptrace, which exists only there. On Windows, run it inside WSL2."
-command -v strace >/dev/null 2>&1 || die "strace is not installed. Install it first, for example: sudo apt install strace"
+case "$READER" in
+  specter) command -v strace >/dev/null 2>&1 || die "strace is not installed. Install it first, for example: sudo apt install strace" ;;
+  bpftrace)
+    command -v bpftrace >/dev/null 2>&1 || die "bpftrace is not installed. Install it first, for example: sudo apt install bpftrace"
+    [ "$(id -u)" = "0" ] || die "loading eBPF programs needs root: run this script with sudo" ;;
+  *) die "READER must be specter or bpftrace, got '$READER'" ;;
+esac
 [[ "$RUNS" =~ ^[0-9]+$ ]] && [ "$RUNS" -ge 1 ] || die "RUNS must be a positive whole number, got '$RUNS'"
 
 scope=0
 [ -r /proc/sys/kernel/yama/ptrace_scope ] && scope=$(cat /proc/sys/kernel/yama/ptrace_scope)
-if [ "$scope" = "3" ] || { [ "$scope" != "0" ] && [ "$(id -u)" != "0" ]; }; then
+if [ "$READER" = specter ] && { [ "$scope" = "3" ] || { [ "$scope" != "0" ] && [ "$(id -u)" != "0" ]; }; }; then
   die "ptrace is not permitted here (kernel.yama.ptrace_scope is $scope and you are not root).
   Run this script as root, or lower the setting for the test and restore it afterwards:
     sudo sysctl -w kernel.yama.ptrace_scope=0
@@ -149,6 +158,27 @@ detach_specter() {
   die "the server still has a tracer after specter stopped"
 }
 
+# READER=bpftrace: the eBPF reader of the spike (experiments/ebpf-spike), filtering by the server's process name
+attach_bpftrace() {
+  local comm
+  comm=$(basename "$TESTSERVER" | cut -c1-15)
+  BPFTRACE_MAX_STRLEN=200 bpftrace "$ROOT/experiments/ebpf-spike/capture.bt" "$comm" >"$WORK/specter.out" 2>"$WORK/specter.err" &
+  SPECTER_PID=$!
+  for _ in $(seq 1 100); do
+    grep -q "Attaching" "$WORK/specter.out" 2>/dev/null && break
+    kill -0 "$SPECTER_PID" 2>/dev/null || die "bpftrace exited before it attached:
+$(cat "$WORK/specter.err")"
+    sleep 0.1
+  done
+  sleep 1 # let the program load
+}
+
+detach_bpftrace() {
+  kill -INT "$SPECTER_PID" 2>/dev/null || true
+  wait "$SPECTER_PID" 2>/dev/null || true
+  SPECTER_PID=""
+}
+
 # one_run <load name> <rate> <condition> <n>
 one_run() {
   local name=$1 rate=$2 cond=$3 n=$4
@@ -157,8 +187,12 @@ one_run() {
   local specter_before=0 strace_before=0 strace_pid=""
 
   if [ "$cond" = spec ]; then
-    attach_specter
-    strace_pid=$(pgrep -P "$SPECTER_PID" -x strace | head -n 1 || true)
+    if [ "$READER" = bpftrace ]; then
+      attach_bpftrace
+    else
+      attach_specter
+      strace_pid=$(pgrep -P "$SPECTER_PID" -x strace | head -n 1 || true)
+    fi
     specter_before=$(cpu_ticks "$SPECTER_PID")
     [ -n "$strace_pid" ] && strace_before=$(cpu_ticks "$strace_pid")
   fi
@@ -182,7 +216,7 @@ $(cat "$prefix.json")"
         secs = t1 - t0
         printf "specter_cpu_pct=%.2f\nstrace_cpu_pct=%.2f\ncaptured_lines=%d\n", (sa - sb) / hz / secs * 100, (ta - tb) / hz / secs * 100, cap
       }' >"$prefix.kv"
-    detach_specter
+    if [ "$READER" = bpftrace ]; then detach_bpftrace; else detach_specter; fi
   fi
 }
 
@@ -212,7 +246,9 @@ describe_machine() {
   [ -n "$cpu" ] || cpu=$(uname -m)
   cores=$(nproc 2>/dev/null || echo "?")
   grep -qi microsoft /proc/version 2>/dev/null && wsl=", WSL2"
-  echo "$cpu, $cores cores, kernel $(uname -r)$wsl, $(strace -V 2>&1 | head -n 1), $(date +%Y-%m-%d)"
+  local tool
+  if [ "$READER" = bpftrace ]; then tool=$(bpftrace --version 2>&1 | head -n 1); else tool=$(strace -V 2>&1 | head -n 1); fi
+  echo "$cpu, $cores cores, kernel $(uname -r)$wsl, $tool, $(date +%Y-%m-%d)"
 }
 
 # ---- go -------------------------------------------------------------------------------------------------------
@@ -224,6 +260,6 @@ done
 [ "$CLOSED" = "1" ] && run_load closed 0
 
 echo >&2
-"$BENCHREPORT" -dir "$RESULTS" -format "$FORMAT" -machine "$(describe_machine)"
+"$BENCHREPORT" -dir "$RESULTS" -format "$FORMAT" -reader "$READER" -machine "$(describe_machine)"
 [ -n "$OUT_DIR" ] && echo "Raw results are in $OUT_DIR" >&2
 exit 0

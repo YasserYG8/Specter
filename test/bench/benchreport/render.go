@@ -11,6 +11,16 @@ type settings struct {
 	TargetPct float64 // largest acceptable increase of the median latency, in percent
 	NoisePct  float64 // baseline spread above which the machine is too noisy to judge
 	MinRate   float64 // smallest acceptable achieved rate, in percent of the offered rate
+	Reader    string  // what is attached to the server: "Specter" (default) or another reader, such as "bpftrace"
+}
+
+// reader is the name of what is attached to the server, "Specter" unless -reader says otherwise.
+func (s settings) reader() string {
+	switch strings.ToLower(s.Reader) {
+	case "", "specter":
+		return "Specter"
+	}
+	return s.Reader
 }
 
 // loadTitle names a load in words.
@@ -29,7 +39,7 @@ func verdict(r row, s settings) string {
 	// Noise matters only when the result is close to the target. An increase that is larger than the target plus
 	// the spread of the baseline cannot be noise, so it is still a clear miss.
 	if r.Noisy && r.IncreasePct <= s.TargetPct+max(r.BaseMedian.Spread, r.BaseRate.Spread) {
-		return fmt.Sprintf("cannot judge: the runs without Specter differ by more than %.0f%%, so this machine is too noisy", s.NoisePct)
+		return fmt.Sprintf("cannot judge: the runs without %s differ by more than %.0f%%, so this machine is too noisy", s.reader(), s.NoisePct)
 	}
 	increaseOK := r.IncreasePct < s.TargetPct
 	rateOK := r.RateKept >= s.MinRate
@@ -67,8 +77,10 @@ func renderText(w io.Writer, rows []row, machine string, s settings) {
 			r.BaseMedian.Median, r.BaseMedian.Spread, r.SpecMedian.Median, r.SpecMedian.Spread, r.IncreasePct)
 		fmt.Fprintf(w, "  99th percentile  %.2f ms  ->  %.2f ms\n", r.BaseP99.Median, r.SpecP99.Median)
 		fmt.Fprintf(w, "  achieved rate    %.0f requests/s  ->  %.0f requests/s\n", r.BaseRate.Median, r.SpecRate.Median)
-		if r.HasKV {
-			fmt.Fprintf(w, "  CPU use          Specter %.1f%%, strace %.1f%% (of one core)\n", r.SpecterCPU, r.StraceCPU)
+		if r.HasKV && r.StraceCPU > 0 {
+			fmt.Fprintf(w, "  CPU use          %s %.1f%%, strace %.1f%% (of one core)\n", s.reader(), r.SpecterCPU, r.StraceCPU)
+		} else if r.HasKV {
+			fmt.Fprintf(w, "  CPU use          %s %.1f%% (of one core; work done inside the kernel is charged to the server and not counted here)\n", s.reader(), r.SpecterCPU)
 		}
 		fmt.Fprintf(w, "  lines captured   %s\n", capturedText(r))
 		fmt.Fprintf(w, "  target           %s\n", verdict(r, s))
@@ -88,7 +100,7 @@ func renderMarkdown(w io.Writer, rows []row, machine string, s settings) {
 	if machine != "" {
 		fmt.Fprintf(w, "Machine: %s\n\n", machine)
 	}
-	fmt.Fprintln(w, "| Load | Median latency without Specter | Median latency with Specter | Change | p99 without / with | Rate without / with | Specter CPU | strace CPU | Lines captured |")
+	fmt.Fprintf(w, "| Load | Median latency without %[1]s | Median latency with %[1]s | Change | p99 without / with | Rate without / with | %[1]s CPU | strace CPU | Lines captured |\n", s.reader())
 	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|")
 	for _, r := range rows {
 		if r.Runs == 0 {
@@ -109,8 +121,8 @@ func renderMarkdown(w io.Writer, rows []row, machine string, s settings) {
 	fmt.Fprintln(w)
 	for _, r := range rows {
 		if r.Noisy && r.Runs > 0 {
-			fmt.Fprintf(w, "Note: for %s the runs without Specter differ by %.0f%% (latency) and %.0f%% (rate), so the machine was too noisy for a small change to mean much.\n",
-				loadTitle(r), r.BaseMedian.Spread, r.BaseRate.Spread)
+			fmt.Fprintf(w, "Note: for %s the runs without %s differ by %.0f%% (latency) and %.0f%% (rate), so the machine was too noisy for a small change to mean much.\n",
+				loadTitle(r), s.reader(), r.BaseMedian.Spread, r.BaseRate.Spread)
 		}
 	}
 }

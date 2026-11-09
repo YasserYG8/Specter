@@ -223,3 +223,23 @@ func TestReadRunsRejectsBadJSON(t *testing.T) {
 		t.Error("a file that is not JSON should be an error, not silently skipped")
 	}
 }
+
+func TestRenderNamesTheReader(t *testing.T) {
+	r := row{Name: "rate-1000", Runs: 5, Mode: "open", Offered: 1000, HasKV: true, SpecterCPU: 3.2, Captured: 9, Sent: 10,
+		BaseMedian: stat{Median: 1}, SpecMedian: stat{Median: 1.05}, BaseRate: stat{Median: 1000}, SpecRate: stat{Median: 1000}, RateKept: 100, IncreasePct: 5}
+	s := settings{TargetPct: 10, NoisePct: 10, MinRate: 99, Reader: "bpftrace"}
+
+	var text, md bytes.Buffer
+	renderText(&text, []row{r}, "", s)
+	renderMarkdown(&md, []row{r}, "", s)
+
+	if !strings.Contains(text.String(), "CPU use          bpftrace 3.2%") || strings.Contains(text.String(), "strace") {
+		t.Errorf("the text report should name bpftrace and not mention strace.\n%s", text.String())
+	}
+	if !strings.Contains(md.String(), "without bpftrace") || !strings.Contains(md.String(), "bpftrace CPU") {
+		t.Errorf("the table should name bpftrace.\n%s", md.String())
+	}
+	if (settings{}).reader() != "Specter" || (settings{Reader: "specter"}).reader() != "Specter" {
+		t.Error("the default reader is Specter")
+	}
+}

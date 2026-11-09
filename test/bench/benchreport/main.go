@@ -16,6 +16,7 @@ func main() {
 	format := flag.String("format", "text", "text or markdown")
 	machine := flag.String("machine", "", "description of the machine, printed at the top")
 	var s settings
+	flag.StringVar(&s.Reader, "reader", "specter", "what is attached in the second condition: specter or the name of another reader, such as bpftrace")
 	flag.Float64Var(&s.TargetPct, "target", 10, "largest acceptable increase of the median latency, in percent")
 	flag.Float64Var(&s.NoisePct, "noise", 10, "baseline spread, in percent, above which the machine is too noisy to judge")
 	flag.Float64Var(&s.MinRate, "min-rate", 99, "smallest acceptable achieved rate, in percent of the offered rate")

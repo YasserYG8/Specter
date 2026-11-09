@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- No `strace` is left behind when Specter is killed. `kill -9` on Specter used to leave its `strace` running and attached to your server, where it stayed (and slowed the server) until the server next wrote a line, so an idle server could stay traced for a long time and a second Specter then said "already traced". On Linux the kernel now tells `strace` to detach when Specter dies, for any reason. Checked 20 times in a row, with the server idle: within a second no `strace` was left, the server had no tracer, and it still answered.
+- The README's performance numbers were replaced with measured ones, which are worse than the old ones: on a test server at 1,000 requests per second, median latency rose from 1.3 ms to 819 ms while Specter was attached, and the peak throughput fell by about 98%. The old text said 60% to 90%. See the README and `test/bench/results/`.
+
+### Added
+
+- `--duration <time>` detaches after that time, for example `--duration 30s` or `--duration 2m`. Specter prints `Detached from PID N after 30s.` and exits with status 0. A target that ends first is reported as before, with status 1. A value with no unit (`30`) or a negative value is refused before anything is attached. Works with every source.
+- A one-line notice on stderr when the `strace` source attaches, saying that it slows the target and is meant for development and test servers. The other sources do not print it.
+- `scripts/bench-overhead.sh` measures how much Specter slows a server, with and without it attached, and prints the median of the runs, their spread and the CPU use. Anyone can run it on their own machine. It uses a small load generator (`test/bench/loadgen`) that counts latency from the time each request was due.
+
 ## 0.1.0 (2026-11-08)
 
 First release. Install on Linux or WSL2 with one command, or from a `.deb`, `.rpm` or `go install`: see the README.

@@ -254,9 +254,21 @@ When the exit code cannot be known (a process that writes to a log file, for exa
 
 When Specter uses the `strace` source, it slows the target. `strace` stops the process at every system call, including the ones it does not print, so the cost depends on how often the server makes calls and writes.
 
-On two test servers, throughput fell by about 60% to 90% while Specter was attached: from about 2,100 to 800 requests per second on one, and from about 14,000 to 1,500 on the other. Your server's result will differ, so try Specter on a staging copy before attaching to anything important.
+**Production use is not recommended yet.** Use Specter on development and test servers. The numbers below show why.
 
-The slowdown ends when Specter detaches (Ctrl+C). The `docker`, `file` and `journal` sources read output that already exists and do not slow the target. The `Source:` line Specter prints when it attaches tells you which one is in use.
+These were measured with [`scripts/bench-overhead.sh`](scripts/bench-overhead.sh) on 2026-11-09: a small HTTP server that writes one log line per request, on a 4-core laptop (AMD Ryzen 5 3500U) under WSL2, run as root, with `strace` 6.8. Each figure is the median of 5 runs of 10 seconds, with and without Specter attached. Latency is counted from the time each request was due, so a server that falls behind shows its queue.
+
+| Load | Median latency without → with Specter | Requests per second without → with |
+| :--- | :--- | :--- |
+| 100 requests/s | 2.1 ms → 5.4 ms | 100 → 100 |
+| 1,000 requests/s | 1.3 ms → 819 ms | 1,000 → 885 |
+| As fast as the server goes | 3.9 ms → 243 ms | 10,400 → 225 |
+
+At 100 requests per second the server keeps up, and each request takes about 3 ms longer. At 1,000 requests per second it does not: the server can no longer answer every request on time, so requests queue and latency grows by hundreds of milliseconds. At full speed, throughput fell by about 98%. Specter itself used up to 73% of one core, and `strace` up to 91%. Every line was still captured (60,000 of 60,000 at 1,000 requests per second). The run without Specter was noisy at full speed (its runs differed by more than 100%), so read that row as the size of the effect and not as an exact figure. The full report is in [`test/bench/results/`](test/bench/results/2026-11-09-strace-wsl2.md).
+
+Your server will give different numbers. Run the script on a copy of it, or on a machine like it, before deciding. Two ways to limit the effect: attach for a short time with `--duration 30s`, and use a source that does not slow the target when you can (below).
+
+The slowdown ends when Specter detaches (Ctrl+C or the end of `--duration`). If Specter is killed, for example with `kill -9`, the kernel makes `strace` detach by itself on Linux, so the server is not left traced. The `docker`, `file` and `journal` sources read output that already exists and do not slow the target. The `Source:` line Specter prints when it attaches tells you which one is in use.
 
 ---
 
