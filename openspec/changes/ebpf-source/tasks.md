@@ -31,11 +31,11 @@
 - [x] 5.1 Run the E2E capture tests once per engine. The eBPF run skips with a reason without root, kernel 5.8 or BTF, unless `SPECTER_REQUIRE_EBPF=1` is set, which makes it fail instead.
 - [x] 5.2 eBPF-only E2E tests: an already traced target, a 100,000-byte write with the marker, a burst against a small ring buffer (test-only option) that produces the lost-writes notice, and no loaded programs within one second after `SIGKILL`.
 - [x] 5.3 CI: a job that runs the eBPF E2E run as root with `SPECTER_REQUIRE_EBPF=1` on `ubuntu-24.04` and `ubuntu-24.04-arm`, and a job that regenerates the BPF files with a pinned `clang` and fails on any difference. The distribution container jobs stay strace-only.
-- [ ] 5.4 Check the workflow file locally, then stop and ask the maintainer to approve pushing, read the CI result, and fix what fails. Do not push without their go-ahead.
+- [x] 5.4 Check the workflow file locally, then stop and ask the maintainer to approve pushing, read the CI result, and fix what fails. Do not push without their go-ahead.
 
 ## 6. Benchmark, docs and final checks
 
 - [x] 6.1 `scripts/bench-overhead.sh`: add `ENGINE=strace|ebpf`, passed as `--source`, and name the engine in the report.
-- [ ] 6.2 Run the benchmark for both engines on a native Linux machine (a GitHub runner run by hand, or a machine the maintainer names), and once in WSL2 for comparison. Keep the reports in `test/bench/results/`.
+- [x] 6.2 Run the benchmark for both engines on a native Linux machine (a GitHub runner run by hand, or a machine the maintainer names), and once in WSL2 for comparison. Keep the reports in `test/bench/results/`.
 - [x] 6.3 README: the engines and how Specter picks one, the `sudo` tip, `--source ebpf` and `--source strace`, the lost-writes notice, and the performance section per engine with the machine and date. Change the production wording only as the `overhead-benchmark` spec allows. `CHANGELOG.md` entry, including the binary size change.
 - [x] 6.4 `gofmt -l .` (with LF endings), `go vet ./...`, `go test ./cmd/... ./internal/... ./test/stress/...` with and without `-race`, the cross-builds, and the E2E suite in WSL for both engines as root. Report the results.

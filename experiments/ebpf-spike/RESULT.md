@@ -105,3 +105,21 @@ What this changes in the gaps above:
 - Gaps 3 (`writev`) and 6 (reading the buffer at exit instead of at entry) are not part of these proofs. Reading at exit is how the program works, and `writev` is task 3.1.
 
 The runners' kernel versions are in the job log of the `ebpf-spike-proof` branch.
+
+## 7. Linux 7.0: the per-syscall tracepoints miss running processes (found 2026-11-10)
+
+The first native benchmark of the real engine, on a GitHub `ubuntu-24.04` runner with kernel 7.0.0-1017-azure, captured only 24% of the lines. The program was attached to `syscalls:sys_enter_write` and `sys_exit_write`, as the spike's was.
+
+A diagnostic test (`diag.c` on the `ebpf-spike-proof` branch, commit 26c1d05) attached five hooks at once and counted the writes of a process started before them and one started after:
+
+| Hook | Process already running (10, then 20 expected) | New process (10 expected) |
+| :--- | :--- | :--- |
+| `tracepoint/syscalls/sys_enter_write` | 6, then stuck at 6 (arm64) or 10 (amd64) | 10 |
+| `tp_btf/sys_enter` | 10, 20 | 10 |
+| `kprobe/vfs_write` | 10, 20 | 10 |
+| `kprobe/__x64_sys_write` (arm64: `__arm64_sys_write`) | 10, 20 | 10 |
+| `tracepoint/raw_syscalls/sys_enter` | 10, 20 | 10 |
+
+Only the per-syscall tracepoint lost writes, and only for processes that were already running, which is every process Specter attaches to. The spike's proofs did not catch it because their writer was started after the program was attached. On the WSL2 kernel (6.6) all hooks saw every write.
+
+The engine now uses `raw_syscalls:sys_enter` and `sys_exit` (commit aec6fd9). They fire for every system call, so the program compares the call's number with the numbers of `write` and `writev` first, which Go sets for the architecture (amd64: 1 and 20, arm64: 64 and 66). With it, the same runner captured every line at 100 and 1,000 requests per second, and the median latency rose by 4% to 5% (`test/bench/results/2026-11-10-both-engines-github-runner.md`).

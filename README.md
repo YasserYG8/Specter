@@ -260,25 +260,37 @@ Specter has two engines for a terminal or a pipe, and they cost very different a
 - **`ebpf`** reads the output inside the kernel and never stops the target. It needs root and Linux 5.8 or later, and Specter picks it when it can.
 - **`strace`** stops the process at every system call, including the ones it does not print, so the cost depends on how often the server makes calls and writes. Specter uses it when `ebpf` cannot run, and says so in a notice.
 
-**Production use is not recommended yet.** Use Specter on development and test servers. The `strace` engine should never be attached to a server you care about. The `ebpf` engine is much lighter, but its numbers below come from WSL2 on a laptop, which is noisy, and the rule is to confirm them on a native Linux machine first (`scripts/bench-overhead.sh` and the `bench` workflow do that).
+**Production use is not recommended yet.** Use Specter on development and test servers. The `strace` engine should never be attached to a server you care about. The `ebpf` engine stayed under a 5% slowdown in the measurements below, but they come from two machines and one test server, and the engine is new.
 
-These were measured with [`scripts/bench-overhead.sh`](scripts/bench-overhead.sh) on 2026-11-09: a small HTTP server that writes one log line per request, on a 4-core laptop (AMD Ryzen 5 3500U) under WSL2, run as root. Each figure is the median of 5 runs of 10 seconds, with and without Specter attached. Latency is counted from the time each request was due, so a server that falls behind shows its queue.
+These were measured with [`scripts/bench-overhead.sh`](scripts/bench-overhead.sh): a small HTTP server that writes one log line per request, run as root. Each figure is the median of 5 runs of 10 seconds, with and without Specter attached. Latency is counted from the time each request was due, so a server that falls behind shows its queue.
 
-| Engine | Load | Median latency without → with Specter | Requests per second without → with |
-| :--- | :--- | :--- | :--- |
-| `strace` | 100 requests/s | 2.1 ms → 5.4 ms | 100 → 100 |
-| `strace` | 1,000 requests/s | 1.3 ms → 819 ms | 1,000 → 885 |
-| `strace` | As fast as the server goes | 3.9 ms → 243 ms | 10,400 → 225 |
-| `ebpf` | 100 requests/s | 2.25 ms → 2.35 ms (+4%) | 100 → 100 |
-| `ebpf` | 1,000 requests/s | 1.37 ms → 1.50 ms (+9.7%) | 1,000 → 1,000 |
-| `ebpf` | As fast as the server goes | 2.6 ms → 4.0 ms | 16,000 → 10,200 |
+**Native Linux** (GitHub runner, 4 cores of an AMD EPYC 7763, kernel 7.0, 2026-11-10). The runs varied by 1% to 6%.
+
+| Engine | Load | Median latency without → with Specter | Requests per second without → with | Lines captured |
+| :--- | :--- | :--- | :--- | :--- |
+| `ebpf` | 100 requests/s | 0.79 ms → 0.83 ms (+5%) | 100 → 100 | 100% |
+| `ebpf` | 1,000 requests/s | 0.65 ms → 0.68 ms (+4%) | 1,000 → 1,000 | 100% |
+| `ebpf` | As fast as the server goes | 1.44 ms → 2.26 ms | 36,000 → 23,700 | 74% |
+| `strace` | 100 requests/s | 0.78 ms → 1.18 ms (+51%) | 100 → 100 | 100% |
+| `strace` | 1,000 requests/s | 0.67 ms → 1.01 ms (+52%) | 1,000 → 1,000 | 100% |
+| `strace` | As fast as the server goes | 1.44 ms → 13.3 ms | 36,000 → 4,400 | 100% |
+
+**WSL2** (a 4-core laptop, AMD Ryzen 5 3500U, 2026-11-09). This machine is slower and much noisier: at 1,000 requests per second the `ebpf` runs with Specter ranged from 1.29 to 1.86 ms.
+
+| Engine | Load | Median latency without → with Specter | Requests per second without → with | Lines captured |
+| :--- | :--- | :--- | :--- | :--- |
+| `ebpf` | 100 requests/s | 2.25 ms → 2.35 ms (+4%) | 100 → 100 | 100% |
+| `ebpf` | 1,000 requests/s | 1.37 ms → 1.50 ms (+9.7%) | 1,000 → 1,000 | 100% |
+| `ebpf` | As fast as the server goes | 2.6 ms → 4.0 ms | 16,000 → 10,200 | 79% |
+| `strace` | 100 requests/s | 2.1 ms → 5.4 ms | 100 → 100 | 100% |
+| `strace` | 1,000 requests/s | 1.3 ms → 819 ms | 1,000 → 885 | 100% |
+| `strace` | As fast as the server goes | 3.9 ms → 243 ms | 10,400 → 225 | 100% |
 
 What the numbers say:
 
-- With `strace`, at 1,000 requests per second the server can no longer answer on time, so requests queue and latency grows by hundreds of milliseconds. At full speed throughput fell by about 98%.
-- With `ebpf`, the server keeps its rate at 100 and 1,000 requests per second, and the median latency rises by under 10%. The 1,000 requests per second result is only just under that line, and the runs with Specter varied a lot (from 1.29 to 1.86 ms), so treat it as "small", not as an exact figure. The 99th percentile went from 4.9 ms to 23 ms.
-- Every line was captured at 100 and 1,000 requests per second, with both engines (60,000 of 60,000).
-- At full speed, the `ebpf` engine captured 79% of the lines (509,403 of 646,084). Specter's own processing of each line (parsing, formatting and printing) used about 1.5 cores at 16,000 lines per second and could not keep up, so the buffer between the kernel and Specter filled and the kernel dropped writes. The target was never slowed by this. Specter counts the lost writes and prints `N writes were lost because the target wrote faster than Specter could read.`, so a loss is never silent. At 1,000 lines per second Specter used about 75% of one core, with either engine.
+- With `ebpf`, the server keeps its rate at 100 and 1,000 requests per second, and the median latency rises by 4% to 5% on native Linux. Every line was captured.
+- With `strace`, every call the server makes is stopped twice. On native Linux that added about 50% to the median latency at a fixed rate, and at full speed throughput fell by 88%. On the slower WSL2 laptop, at 1,000 requests per second the server could no longer answer on time, so requests queued and latency grew by hundreds of milliseconds.
+- At full speed, the `ebpf` engine missed lines: it captured 74% on native Linux and 79% on WSL2. The server was not slowed by this. Specter's own processing of each line (parsing, formatting and printing) needed more than one core at that rate and could not keep up, so the buffer between the kernel and Specter filled and the kernel dropped writes. Specter counts the lost writes and prints `N writes were lost because the target wrote faster than Specter could read.`, so a loss is never silent. `strace` captured every line there only because it slowed the server down to its own pace.
 
 Your server will give different numbers. Run the script on a copy of it, or on a machine like it, before deciding: `ENGINE=ebpf scripts/bench-overhead.sh` or `ENGINE=strace scripts/bench-overhead.sh`. The full reports are in [`test/bench/results/`](test/bench/results/). Two ways to limit the effect of `strace`: attach for a short time with `--duration 30s`, and use a source that does not slow the target when you can.
 
