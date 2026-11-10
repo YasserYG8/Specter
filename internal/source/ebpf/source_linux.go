@@ -44,7 +44,6 @@ type session struct {
 var statNames = []string{
 	"lost", "unreadable", "enter_followed", "dropped_by_rules", "call_stored", "exit_matched", "data_sent",
 	"ns_lookup_failed", "fork_by_followed", "fork_child_added", "fork_child_ns_not_found", "exit_removed", "fd_unknown",
-	"DIAG_enter_all", "DIAG_not_followed",
 }
 
 // counters returns the counters of the BPF program, summed over all CPUs, as one line of name=value. It is how a
@@ -67,7 +66,7 @@ func (c *session) counters() string {
 		}
 		parts = append(parts, fmt.Sprintf("%s=%d", name, total))
 	}
-	// The followed set and the IDs of the last write by a process that was not in it
+	// The followed set, with each process's depth below the target
 	var followed []string
 	var key uint32
 	var val specterFollowedProc
@@ -75,21 +74,7 @@ func (c *session) counters() string {
 	for it.Next(&key, &val) {
 		followed = append(followed, fmt.Sprintf("%d:d%d", key, val.Depth))
 	}
-	var last [3]uint64
-	for i := range last {
-		_ = c.objs.LastOther.Lookup(uint32(i), &last[i])
-	}
-	head := fmt.Sprintf("followed=[%s] last_other(ns_pid=%d ns_tgid=%d host=%d/%d)", strings.Join(followed, ","), last[0], last[1], last[2]>>32, last[2]&0xffffffff)
-	// The diagnostic counters come first, so that a long line cut short by an annotation still shows them
-	var diag, rest []string
-	for _, p := range parts {
-		if strings.HasPrefix(p, "DIAG_") {
-			diag = append(diag, p)
-		} else {
-			rest = append(rest, p)
-		}
-	}
-	return strings.Join(append(append([]string{head}, diag...), rest...), " ")
+	return strings.Join(append([]string{"followed=[" + strings.Join(followed, ",") + "]"}, parts...), " ")
 }
 
 // close detaches the programs and releases everything. The kernel does the same on its own when Specter exits,

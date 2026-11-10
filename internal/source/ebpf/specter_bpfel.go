@@ -80,7 +80,6 @@ const (
 	specterMapConfigMap   = "config_map"
 	specterMapEvents      = "events"
 	specterMapFollowed    = "followed"
-	specterMapLastOther   = "last_other"
 	specterMapScratchMap  = "scratch_map"
 	specterMapSeenFiles   = "seen_files"
 	specterMapStats       = "stats"
@@ -148,7 +147,6 @@ type specterMapSpecs struct {
 	ConfigMap  *ebpf.MapSpec `ebpf:"config_map"`
 	Events     *ebpf.MapSpec `ebpf:"events"`
 	Followed   *ebpf.MapSpec `ebpf:"followed"`
-	LastOther  *ebpf.MapSpec `ebpf:"last_other"`
 	ScratchMap *ebpf.MapSpec `ebpf:"scratch_map"`
 	SeenFiles  *ebpf.MapSpec `ebpf:"seen_files"`
 	Stats      *ebpf.MapSpec `ebpf:"stats"`
@@ -186,7 +184,6 @@ type specterMaps struct {
 	ConfigMap  *ebpf.Map `ebpf:"config_map"`
 	Events     *ebpf.Map `ebpf:"events"`
 	Followed   *ebpf.Map `ebpf:"followed"`
-	LastOther  *ebpf.Map `ebpf:"last_other"`
 	ScratchMap *ebpf.Map `ebpf:"scratch_map"`
 	SeenFiles  *ebpf.Map `ebpf:"seen_files"`
 	Stats      *ebpf.Map `ebpf:"stats"`
@@ -198,7 +195,6 @@ func (m *specterMaps) Close() error {
 		m.ConfigMap,
 		m.Events,
 		m.Followed,
-		m.LastOther,
 		m.ScratchMap,
 		m.SeenFiles,
 		m.Stats,

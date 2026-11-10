@@ -47,8 +47,6 @@
 #define ST_FORK_NO_NS 10    /* children whose ID in our namespace was not found */
 #define ST_EXIT_REMOVED 11  /* followed processes removed when they exited */
 #define ST_FD_UNKNOWN 12    /* writes whose file could not be identified */
-#define ST_ENTER_ALL 13     /* DIAGNOSTIC: every write entry on the machine, followed or not */
-#define ST_NOT_FOLLOWED 14  /* DIAGNOSTIC: write entries of processes that are not followed */
 #define ST_COUNT 16
 
 #define S_IFMT 0170000
@@ -219,14 +217,6 @@ struct {
 	__type(value, struct scratch);
 } scratch_map SEC(".maps");
 
-/* DIAGNOSTIC: the IDs of the last write by a process that was not followed: ns pid, ns tgid, host pid_tgid */
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 4);
-	__type(key, __u32);
-	__type(value, __u64);
-} last_other SEC(".maps");
-
 /* Counters, one set per CPU: see the ST_ indexes */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -301,21 +291,13 @@ static __always_inline int handle_enter(__u32 fd, __u64 buf, __u64 count, __u32 
 	struct config *cfg = bpf_map_lookup_elem(&config_map, &zero);
 	if (!cfg)
 		return 0;
-	bump(ST_ENTER_ALL);
 	struct bpf_pidns_info ids = {};
 	if (ns_ids(cfg, &ids)) {
 		bump(ST_NS_FAILED);
 		return 0;
 	}
-	if (!bpf_map_lookup_elem(&followed, &ids.tgid)) {
-		__u32 i0 = 0, i1 = 1, i2 = 2;
-		__u64 a = ids.pid, b = ids.tgid, h = bpf_get_current_pid_tgid();
-		bpf_map_update_elem(&last_other, &i0, &a, BPF_ANY);
-		bpf_map_update_elem(&last_other, &i1, &b, BPF_ANY);
-		bpf_map_update_elem(&last_other, &i2, &h, BPF_ANY);
-		bump(ST_NOT_FOLLOWED);
+	if (!bpf_map_lookup_elem(&followed, &ids.tgid))
 		return 0;
-	}
 	bump(ST_ENTER_FOLLOWED);
 
 	__u32 dev = 0, mode = 0;
