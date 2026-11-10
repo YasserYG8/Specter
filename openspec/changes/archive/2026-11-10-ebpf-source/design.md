@@ -33,7 +33,7 @@ This is a library dependency, not an external tool. The invariant "external tool
 
 ### 2. Syscall tracepoints, read at exit
 
-The program attaches to `syscalls/sys_enter_write`, `sys_exit_write`, `sys_enter_writev` and `sys_exit_writev`. On enter, for a process in the set (decision 3), it stores the fd, buffer pointer and length per thread in a hash map. On exit, if the call returned more than 0 bytes, it reads that many bytes (or the `iovec` entries they cover) and sends them.
+The program attaches to `raw_syscalls/sys_enter` and `sys_exit`, and keeps only the calls whose number is `write` or `writev` for the architecture (Go sets the numbers: amd64 1 and 20, arm64 64 and 66). The first version used `syscalls/sys_enter_write` and the other per-call tracepoints, but on Linux 7.0 they miss the writes of processes that were already running when the program was attached, which is every target (see `experiments/ebpf-spike/RESULT.md` section 7). On enter, for a process in the set (decision 3), it stores the fd, buffer pointer and length per thread in a hash map. On exit, if the call returned more than 0 bytes, it reads that many bytes (or the `iovec` entries they cover) and sends them.
 
 Reading at exit closes gap 6: the kernel has just read the same buffer, so its pages are in memory. It also gives the real number of bytes written, as `strace` does with `= N`.
 
