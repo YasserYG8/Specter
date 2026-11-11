@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -338,10 +337,11 @@ func (s *Source) read(ctx context.Context, sess *session, target source.Target, 
 }
 
 // checkLogFile is called once per regular file that a followed process writes to through a descriptor other than 1
-// and 2. When its name says it is a log, the user is told once, with the same words as for the strace source.
+// and 2. When it is a log file by the shared rule (source.IsLogFile), the user is told once, with the same words as
+// for the strace source.
 func (s *Source) checkLogFile(pid, fd int) {
 	path, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", strconv.Itoa(fd)))
-	if err != nil || !strings.HasPrefix(path, "/") || !strings.Contains(strings.ToLower(pathpkg.Base(path)), "log") {
+	if err != nil || !strings.HasPrefix(path, "/") || !source.IsLogFile(path, pathExists) {
 		return
 	}
 	s.mu.Lock()
@@ -355,6 +355,12 @@ func (s *Source) checkLogFile(pid, fd int) {
 		return
 	}
 	s.notify(fmt.Sprintf("Target writes to its own log file %s, which Specter does not follow. To read it: tail -f %s", path, path))
+}
+
+// pathExists reports whether a path exists. It is the check that source.IsLogFile uses to find a CURRENT file.
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // watchLost reads the program's counter of events it could not send, once per second, and tells the user how

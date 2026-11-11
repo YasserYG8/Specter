@@ -335,6 +335,52 @@ func TestSource_OwnLogFileNoticeNamesTheFileOnce(t *testing.T) {
 	}
 }
 
+// A name that only contains the letters "log" is not a log file, so only the real log file gets a notice.
+func TestSource_OwnLogFileNoticeSkipsNamesThatOnlyContainLog(t *testing.T) {
+	requireBPF(t)
+	dir := t.TempDir()
+	catalogPath := dir + "/catalog.json"
+	logPath := dir + "/app.log"
+	sh := startShell(t, drainedPipe(t), drainedPipe(t))
+
+	var mu sync.Mutex
+	var notices []string
+	src := NewSource(Options{})
+	src.SetNotifier(func(m string) { mu.Lock(); notices = append(notices, m); mu.Unlock() })
+	ctx, cancel := context.WithCancel(context.Background())
+	chunks, _ := src.Start(ctx, source.Target{PID: sh.pid})
+	go func() {
+		for range chunks {
+		}
+	}()
+	t.Cleanup(func() { cancel(); _ = src.Stop() })
+
+	// The writers stay alive for a second, like a server would: the path is read from /proc while they run
+	sh.run("(echo one; sleep 1; echo two) | tee %s > /dev/null", catalogPath)
+	sh.run("(echo one; sleep 1; echo two) | tee %s > /dev/null", logPath)
+	sh.run("echo done-marker")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(notices)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(notices) != 1 {
+		t.Fatalf("expected one notice, got %d: %v [kernel %s] [counters: %s]", len(notices), notices, kernelRelease(), src.debugCounters())
+	}
+	if want := "Target writes to its own log file " + logPath + ", which Specter does not follow."; !strings.HasPrefix(notices[0], want) {
+		t.Errorf("notice = %q", notices[0])
+	}
+}
+
 func openPty(t *testing.T) (slave *os.File, name string) {
 	t.Helper()
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)

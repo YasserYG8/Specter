@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,7 +38,8 @@ type Source struct {
 	procRoot           string // proc filesystem root, "/proc" when empty
 	readlink           func(path string) (string, error)
 	isRegularFile      func(path string) bool
-	maxLine            int // longest strace line to process, maxStraceLine when zero
+	pathExists         func(path string) bool // used for the CURRENT check of embedded database logs
+	maxLine            int                    // longest strace line to process, maxStraceLine when zero
 	seenFDs            map[[2]int]bool
 	seenLogPaths       map[string]bool
 	oversizedPending   int
@@ -373,7 +373,7 @@ func (s *Source) noteOversizedLine(n int) {
 }
 
 // checkOtherFD is called for writes to a descriptor other than stdout and stderr. It resolves each (pid, fd)
-// pair once and, when it is a regular file with "log" in its name, tells the user once per path.
+// pair once and, when it is a regular log file (see source.IsLogFile), tells the user once per path.
 func (s *Source) checkOtherFD(pid, fd int) {
 	key := [2]int{pid, fd}
 	s.mu.Lock()
@@ -386,6 +386,7 @@ func (s *Source) checkOtherFD(pid, fd int) {
 	}
 	s.seenFDs[key] = true
 	isRegular := s.isRegularFile
+	exists := s.pathExists
 	s.mu.Unlock()
 
 	root, readlink := s.procAccess()
@@ -395,10 +396,16 @@ func (s *Source) checkOtherFD(pid, fd int) {
 			return err == nil && fi.Mode().IsRegular()
 		}
 	}
+	if exists == nil {
+		exists = func(path string) bool {
+			_, err := os.Stat(path)
+			return err == nil
+		}
+	}
 
 	path, err := readlink(filepath.Join(root, strconv.Itoa(pid), "fd", strconv.Itoa(fd)))
 	// Sockets and pipes resolve to names like socket:[123], which are not absolute paths
-	if err != nil || !strings.HasPrefix(path, "/") || !strings.Contains(strings.ToLower(pathpkg.Base(path)), "log") {
+	if err != nil || !strings.HasPrefix(path, "/") || !source.IsLogFile(path, exists) {
 		return
 	}
 	if !isRegular(path) {

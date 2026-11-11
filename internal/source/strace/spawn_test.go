@@ -227,6 +227,47 @@ func TestOwnLogFileNotice(t *testing.T) {
 	})
 }
 
+func TestOwnLogFileNotice_WholeWordAndDatabaseLogs(t *testing.T) {
+	const turbopackLog = "/app/.next/dev/cache/turbopack/f37fad94/LOG"
+	links := map[string]string{
+		"/fakeproc/10/fd/3": "/srv/shop/catalog.json",
+		"/fakeproc/10/fd/4": turbopackLog,
+		"/fakeproc/10/fd/5": "/srv/app/LOG",
+	}
+	regular := map[string]bool{
+		"/srv/shop/catalog.json": true,
+		turbopackLog:             true,
+		"/srv/app/LOG":           true,
+	}
+	existing := map[string]bool{"/app/.next/dev/cache/turbopack/f37fad94/CURRENT": true}
+
+	tests := []struct {
+		name string
+		fd   int
+		want string // path named in the notice, empty for no notice
+	}{
+		{"log inside a longer word", 3, ""},
+		{"turbopack LOG next to CURRENT", 4, ""},
+		{"LOG without CURRENT", 5, "/srv/app/LOG"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, notices := logNoticeSource(links, regular)
+			s.pathExists = func(path string) bool { return existing[path] }
+			s.checkOtherFD(10, tt.fd)
+			if tt.want == "" {
+				if len(*notices) != 0 {
+					t.Errorf("expected no notice, got %v", *notices)
+				}
+				return
+			}
+			if len(*notices) != 1 || !strings.Contains((*notices)[0], tt.want) {
+				t.Errorf("expected one notice naming %s, got %v", tt.want, *notices)
+			}
+		})
+	}
+}
+
 func TestReadLoop_ReportsWritesToOtherFDs(t *testing.T) {
 	s, notices := logNoticeSource(
 		map[string]string{"/fakeproc/1/fd/3": "/srv/app/server.log"},
