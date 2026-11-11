@@ -41,6 +41,18 @@ func TestIsLogFile(t *testing.T) {
 		},
 		{"LOG without CURRENT", "/srv/app/LOG", nil, true},
 		{
+			"LOG in the root folder with /CURRENT",
+			"/LOG",
+			map[string]bool{"/CURRENT": true},
+			false,
+		},
+		{
+			"LOG in the root folder is not matched with a CURRENT in the working directory",
+			"/LOG",
+			map[string]bool{"CURRENT": true},
+			true,
+		},
+		{
 			"LOG.old.text with CURRENT is not a database log name",
 			"/db/LOG.old.bak",
 			map[string]bool{"/db/CURRENT": true},

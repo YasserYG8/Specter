@@ -17,8 +17,9 @@ import (
 // database (the LevelDB and RocksDB layout), and does not count. exists reports whether a path exists. It is only
 // called for those names.
 func IsLogFile(path string, exists func(string) bool) bool {
+	// dir keeps its final slash, so the folder of "/LOG" is "/" and CURRENT is looked up as "/CURRENT". Without the
+	// slash the folder would be empty, and "CURRENT" would be looked up in Specter's own working directory.
 	dir, base := pathpkg.Split(path)
-	dir = strings.TrimSuffix(dir, "/")
 
 	if isDatabaseLogName(base) && exists != nil && exists(pathpkg.Join(dir, "CURRENT")) {
 		return false
