@@ -35,8 +35,15 @@ func (r *Renderer) Render(entry *Entry) string {
 
 	useColor := !r.opts.NoColor && !color.NoColor
 
-	// 2. Structured JSON log (single line)
-	if jl := ParseJSONLog(text); jl != nil {
+	// 2. Structured JSON log (single line). The grouper decoded the line already and left the result on the entry;
+	// an entry built anywhere else carries none, so the text is decoded here.
+	var jl *JSONLog
+	if entry.jsonKnown && len(entry.Lines) == 1 {
+		jl = entry.json
+	} else {
+		jl = ParseJSONLog(text)
+	}
+	if jl != nil {
 		if r.opts.ForceJSON {
 			return text
 		}

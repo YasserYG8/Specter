@@ -39,6 +39,9 @@ func ParseSeverity(s string) Severity {
 
 // HasANSI checks if the string contains terminal ANSI escape sequences.
 func HasANSI(s string) bool {
+	if !hasEscapeByte(s) {
+		return false
+	}
 	return ansiSGRRegex.MatchString(s) || anyANSIRegex.MatchString(s)
 }
 

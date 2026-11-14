@@ -22,6 +22,11 @@ type JSONLog struct {
 // ParseJSONLog attempts to parse a string as a structured JSON object.
 // Returns nil if the line is not a JSON object.
 func ParseJSONLog(line string) *JSONLog {
+	// A JSON object must start with '{' once the escape codes are stripped, and stripping only removes bytes, so
+	// a line with no '{' at all cannot be one. This skips the strip for most lines that are not JSON.
+	if strings.IndexByte(line, '{') < 0 {
+		return nil
+	}
 	trimmed := strings.TrimSpace(StripANSI(line))
 	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
 		return nil

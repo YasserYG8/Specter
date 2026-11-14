@@ -69,13 +69,27 @@ var (
 	numberedFrameRegex  = regexp.MustCompile(`^#\d+\s+(?:0x[0-9a-f]+\s+in\s+|/[^\s(]+(?:\(\d+\))?|[a-zA-Z0-9_\\]+(?:->|::))`)
 )
 
+// hasEscapeByte reports whether s contains an ESC (0x1b) or a BEL (0x07) byte. Every alternative of ansiSGRRegex,
+// anyANSIRegex and nonSGRControlRegex begins with one of the two, so a line with neither cannot match any of them.
+// Both bytes must be tested: a check for ESC alone would let a lone BEL through, which the terminal would beep at.
+// strings.IndexByte is vectorized, so this costs a few nanoseconds where a regular expression costs microseconds.
+func hasEscapeByte(s string) bool {
+	return strings.IndexByte(s, 0x1b) >= 0 || strings.IndexByte(s, 0x07) >= 0
+}
+
 // StripANSI removes all ANSI escape sequences from a string.
 func StripANSI(s string) string {
+	if !hasEscapeByte(s) {
+		return s
+	}
 	return anyANSIRegex.ReplaceAllString(s, "")
 }
 
 // SanitizeTerminalOutput preserves SGR color sequences but strips dangerous control codes (OSC, CSI, BEL).
 func SanitizeTerminalOutput(s string) string {
+	if !hasEscapeByte(s) {
+		return s
+	}
 	return nonSGRControlRegex.ReplaceAllString(s, "")
 }
 

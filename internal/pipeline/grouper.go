@@ -36,6 +36,43 @@ type Entry struct {
 	// EndsTrace is true on the line that closes a Python traceback (its exception line). Traces of other
 	// languages have no closing line.
 	EndsTrace bool
+
+	// json and jsonKnown carry the grouper's one JSON decode of this line on to the renderer, so the line is not
+	// decoded again. When jsonKnown is true, json is the result (nil when the line is not a JSON object). When it
+	// is false, which is the case for every Entry built outside the grouper, the renderer decodes the text itself.
+	// They are unexported so that no caller can set a result that does not belong to the text.
+	json      *JSONLog
+	jsonKnown bool
+}
+
+// jsonMemo holds the JSON decision for one line, so that the line is decoded at most once however many parts of
+// the pipeline ask: the record decision, IsJSON and, through the Entry, the renderer. The decode happens on the
+// first call to get and never earlier, so a path that did not decode a line before still does not.
+type jsonMemo struct {
+	text  string
+	known bool
+	jl    *JSONLog
+}
+
+// get returns the line decoded as a JSON log, or nil when it is not a JSON object.
+func (m *jsonMemo) get() *JSONLog {
+	if !m.known {
+		m.jl = ParseJSONLog(m.text)
+		m.known = true
+	}
+	return m.jl
+}
+
+// carryTo puts the decision on the entry for the renderer, when there is one to carry.
+//
+// The memo decodes the grouper's clean text (the line with its escape codes stripped once), and the renderer would
+// decode the entry's own text, which ParseJSONLog strips once. Both reach the same bytes only when stripping the
+// clean text again changes nothing. That holds when it has no ESC or BEL left. A line that still has one, such as
+// `\x1b[3\x1b[0m1m`, whose strip builds a new sequence, is left to the renderer's own decode.
+func (m *jsonMemo) carryTo(e *Entry) {
+	if m.known && !hasEscapeByte(m.text) {
+		e.json, e.jsonKnown = m.jl, true
+	}
 }
 
 // Text returns the text representation of the entry.
@@ -76,6 +113,11 @@ func isTraceHeader(line string) bool {
 
 // isRecordStart determines if a clean line initiates a new log record.
 func isRecordStart(clean string) (bool, Severity, bool, bool) {
+	return isRecordStartMemo(clean, &jsonMemo{text: clean})
+}
+
+// isRecordStartMemo is isRecordStart with the JSON decision of the line kept in memo, which the caller can reuse.
+func isRecordStartMemo(clean string, memo *jsonMemo) (bool, Severity, bool, bool) {
 	if clean == "" {
 		return false, SeverityNone, false, false
 	}
@@ -89,7 +131,7 @@ func isRecordStart(clean string) (bool, Severity, bool, bool) {
 	}
 
 	// 2. Structured JSON log
-	if ParseJSONLog(clean) != nil {
+	if memo.get() != nil {
 		return true, DetectSeverity(clean), false, false
 	}
 
@@ -292,7 +334,8 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 				}
 
 				// Check if line starts a new record
-				isStart, lvl, inTrace, isGoDump := isRecordStart(cleanText)
+				memo := jsonMemo{text: cleanText}
+				isStart, lvl, inTrace, isGoDump := isRecordStartMemo(cleanText, &memo)
 				if isStart {
 					isDotNet := dotnetLevelRegex.MatchString(cleanText)
 					rec = &streamRecord{
@@ -311,12 +354,13 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 						IsTrace:              inTrace,
 						IsFrame:              false,
 						IsRecordContinuation: false,
-						IsJSON:               ParseJSONLog(cleanText) != nil,
+						IsJSON:               memo.get() != nil,
 						IsPartial:            false,
 						TS:                   now,
 						Raw:                  rawText,
 						Safe:                 safeText,
 					}
+					memo.carryTo(&entry)
 					if !sendEntry(entry) {
 						return
 					}
@@ -339,6 +383,7 @@ func (g *StackTraceGrouper) Group(ctx context.Context, in <-chan Line) <-chan En
 					Raw:                  rawText,
 					Safe:                 safeText,
 				}
+				memo.carryTo(&plainEntry)
 				if !sendEntry(plainEntry) {
 					return
 				}
