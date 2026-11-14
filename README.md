@@ -46,8 +46,8 @@ sh install.sh
 **3. A package** from the [latest release](https://github.com/YasserYG8/Specter/releases/latest) page. The packages list `strace`, `lsof` and `iproute2` as recommended packages:
 
 ```bash
-sudo apt install ./specter_0.1.0_linux_amd64.deb     # Debian, Ubuntu
-sudo dnf install ./specter_0.1.0_linux_amd64.rpm     # Fedora, RHEL
+sudo apt install ./specter_0.2.0_linux_amd64.deb     # Debian, Ubuntu
+sudo dnf install ./specter_0.2.0_linux_amd64.rpm     # Fedora, RHEL
 ```
 
 **4. With Go** (1.26 or higher):
@@ -290,7 +290,7 @@ What the numbers say:
 
 - With `ebpf`, the server keeps its rate at 100 and 1,000 requests per second, and the median latency rises by 4% to 5% on native Linux. Every line was captured.
 - With `strace`, every call the server makes is stopped twice. On native Linux that added about 50% to the median latency at a fixed rate, and at full speed throughput fell by 88%. On the slower WSL2 laptop, at 1,000 requests per second the server could no longer answer on time, so requests queued and latency grew by hundreds of milliseconds.
-- At full speed, the `ebpf` engine missed lines: it captured 74% on native Linux and 79% on WSL2. The server was not slowed by this. Specter's own processing of each line (parsing, formatting and printing) needed more than one core at that rate and could not keep up, so the buffer between the kernel and Specter filled and the kernel dropped writes. Specter counts the lost writes and prints `N writes were lost because the target wrote faster than Specter could read.`, so a loss is never silent. `strace` captured every line there only because it slowed the server down to its own pace.
+- The tables above were measured before version 0.2.0. At full speed the `ebpf` engine missed lines then: it captured 74% on native Linux and 79% on WSL2, because Specter's own processing of each line could not keep up. Version 0.2.0 processes each line with much less work. On the same WSL2 laptop, measured before and after in one session (2026-11-14), `ebpf` at full speed now captures **100%** of the lines (64.63% before), and Specter uses about 1 core instead of 1.5. The cost is that the server is a little slower at full speed with Specter attached (23,000 → 19,700 requests per second there), because every line is now kept. Native Linux has not been re-measured yet. See [`test/bench/results/2026-11-14-faster-line-processing-wsl2.md`](test/bench/results/2026-11-14-faster-line-processing-wsl2.md). When lines are lost, Specter counts them and prints `N writes were lost because the target wrote faster than Specter could read.`, so a loss is never silent. `strace` captured every line there only because it slowed the server down to its own pace.
 
 Your server will give different numbers. Run the script on a copy of it, or on a machine like it, before deciding: `ENGINE=ebpf scripts/bench-overhead.sh` or `ENGINE=strace scripts/bench-overhead.sh`. The full reports are in [`test/bench/results/`](test/bench/results/). Two ways to limit the effect of `strace`: attach for a short time with `--duration 30s`, and use a source that does not slow the target when you can.
 
