@@ -77,6 +77,7 @@ Ubuntu and WSL2 restrict `ptrace` by default, so attaching to a running process 
 - **Interactive Discovery Picker**: Run `specter` with zero arguments to browse all active dev servers, listening ports, Docker containers, and project directories in a comfortable, keyboard-driven UI (`↑`/`↓` or `k`/`j`, `Enter` to select).
 - **Project-Aware Resolution**: Automatically infers project names from your working directory, git repositories, or container labels (like the `ports` CLI). Attach instantly via `specter <project-name>`.
 - **Flexible Target Resolution**: Attach by listening port (`specter 3000`), process ID (`specter --pid 14280`), Docker container name or ID (`specter web_app`), or project name (`specter example`).
+- **Several Targets in One Stream**: `specter 3000 4000` follows a frontend and an API together, with every line tagged by its target (`:3000 | ...`). See [Following Several Targets](#following-several-targets).
 - **Multi-Process / Worker Tracing**: Child worker processes (e.g. Node.js `cluster`, Gunicorn, Celery, Puma, Unicorn) that already exist when you attach are always traced, and workers started later are followed. `--tree` also traces deeper descendants, up to 3 levels down.
 - **Smart Log Pipeline**: Reassembles split lines and multi-threaded streams, pretty-prints single-line JSON logs, highlights HTTP status codes, and groups multi-line stack traces (Node.js, Python, Go, Java).
 - **Zero Configuration & Strictly Read-Only**: Works against already-running processes without code modifications, SDKs, or restarts. Never injects code or opens inbound network ports.
@@ -170,6 +171,10 @@ specter 7a4b1c2d3e4f
 # 5. Attach by Process ID (PID)
 specter --pid 18492
 specter -p 18492
+
+# 6. Follow several targets together (up to 8)
+specter 3000 4000
+specter 3000 web --pid 18492
 ```
 
 A bare number is always a **port**. If nothing listens on it, Specter says so and attaches to nothing. It never falls back to the process whose PID happens to be the same number, because that is almost never the server you meant. When such a process exists, the message names it and shows the command to attach to it:
@@ -182,11 +187,41 @@ Hint: PID 3000 exists (systemd-journald). To attach to it: specter --pid 3000
 
 A number above 65535 cannot be a port, so `specter 70000` attaches to PID 70000.
 
+### Following Several Targets
+
+A web app often has more than one server, such as a frontend dev server and an API. Give Specter all of them and it shows one stream, with every line marked by the target it came from:
+
+```bash
+specter 3000 4000
+specter 3000 web --pid 18492      # a port, a container and a PID
+specter --pid 18492 --pid 18493   # --pid can be repeated
+```
+
+```
+:3000 | GET /api/users 200 12ms
+:4000 | 12:00:01.250 [INFO] request received id=7
+:3000 | GET /api/users/7 500 31ms
+:4000 | Traceback (most recent call last):
+:4000 |   File "api.py", line 41, in handler
+:4000 | ValueError: bad id
+web   | started
+```
+
+- **Each target is read on its own.** Each has its own source, so one can use `ebpf` and another `docker`. Every option (`--level`, `--grep`, `--stderr`, `--raw`, `--json`, `--tree`, `--source`, `--duration`) applies to all targets.
+- **The tag** is the target as you wrote it (`:3000` for a port, `pid:18492` for a PID, the name for a container or a project), padded to one width. On a terminal each tag has its own color (never red or yellow, which mean error and warning). When the output is piped, the tag is plain text, so `specter 3000 4000 | grep ':4000 |'` works. `--raw` and `--json` lines are tagged too, so `jq` needs one target. With a single target there is no tag and the output is the same as ever.
+- **A stack trace stays whole.** While a target is in the middle of a stack trace, lines of the other targets wait (up to 200 ms after its last line), then follow it. A prompt without a line break (`Continue? `) is closed with a line break before another target writes.
+- **All or nothing at start.** If a target cannot be found, or its source cannot start, Specter stops what it started and exits with an error before it prints any log line.
+- **The same process is followed once.** `specter 3000 9229` (one server on two ports), or a PID that is a worker of another target, gives a notice and one stream.
+- **When one target ends, the others continue.** Specter prints how it ended, tagged (`:4000 Target PID 4417 exited with code 1.`), and keeps streaming the rest. It exits when all targets have ended or when you stop it. The exit status is **1** if any target ended by itself, and **0** after Ctrl+C or `--duration` when none did.
+- **Status messages name their target** (`:3000 Attaching to PID ...`, `:4000 [specter:notice] Nothing captured yet.`).
+
+Cost: each `ebpf` target loads its own kernel program, so two `ebpf` targets run two programs on every write on the machine. One target costs the same as before.
+
 ### Flags
 
 | Flag | Shorthand | Description |
 | :--- | :--- | :--- |
-| `--pid <pid>` | `-p` | Attach to the process with this PID, whatever its value. It is never checked as a port. Give one PID, and not together with a port, container or project. |
+| `--pid <pid>` | `-p` | Attach to the process with this PID, whatever its value. It is never checked as a port. Can be repeated, and can be mixed with ports, containers and projects (up to 8 targets in all). |
 | `--level <lvl>` | `-l` | Minimum log level to display (`debug`, `info`, `warn`, `error`). An unknown value is an error. A line whose level Specter cannot find is always shown, never hidden. Levels are read from JSON and `level=` fields, `[INFO]`, `INFO:`, `| INFO |`, `app.INFO:`, `<timestamp> INFO ...`, and the common Python formats: the `logging` cookbook (`2026-11-07 10:12:50,516 - app - INFO - ...`), Gunicorn, loguru and Celery (`[2026-11-07 10:12:50,516: ERROR/ForkPoolWorker-1] ...`). A level word inside a message is not used. |
 | `--grep <pattern>` | `-g` | Filter output by text or regular expression. A stack trace is shown whole when any of its lines matches, and not at all otherwise. To do this Specter holds a trace until it ends (up to 200 ms after its last line), so lines of other processes may appear before it. |
 | `--stderr` | | Stream only standard error (fd 2). Useful for isolating errors/crashes. Limit: when a Node.js server runs in a terminal, its output goes through reopened descriptors, and when stdout and stderr are the same terminal Specter cannot tell which one a line came from. Those lines count as stdout, so `--stderr` hides them. Redirecting the server's stderr separately (for example `2>err.log`) makes the two distinct again. |
@@ -250,6 +285,8 @@ If the server you are watching stops, Specter stops too, prints one line about h
 When the exit code cannot be known (a process that writes to a log file, for example, because only a parent can read the exit code of a process after it is gone), the line is `Target PID 595 exited.` Specter notices within about a second.
 
 `Detached from PID N cleanly.` is printed only when **you** stop Specter with Ctrl+C, and then the exit status is **0**. After `--duration` the line is `Detached from PID N after 30s.`, also with status **0**. A script can tell the two apart by the exit status. A server that systemd restarts is not reported as stopped: when Specter follows a systemd unit, it keeps following it.
+
+With several targets, each one is reported when it ends (with its tag in front), and the others keep streaming. Ctrl+C then prints one `Detached` line for each target that was still running. The exit status is **1** if any target ended by itself, otherwise **0**.
 
 ---
 

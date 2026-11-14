@@ -1,7 +1,7 @@
 # target-arguments Specification
 
 ## Purpose
-Defines how Specter interprets its positional argument and the `--pid` flag: whole numbers up to 65535 are ports, larger numbers are PIDs, `--pid` attaches by PID for any value, and an empty port never falls back to a PID.
+Defines how Specter interprets its positional arguments and the `--pid` flag: whole numbers up to 65535 are ports, larger numbers are PIDs, `--pid` attaches by PID for any value and can be repeated and mixed with positional targets, and an empty port never falls back to a PID.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ A positional argument that is a whole number above 65535 SHALL be resolved as a 
 - **THEN** Specter exits with a non-zero status and an error that says no process with PID 70000 exists
 
 ### Requirement: Explicit PID Flag
-The system SHALL accept `--pid <PID>`, with the shorthand `-p`, to attach to a process by PID, for any PID value. The flag SHALL be declared as repeatable. Until several targets are supported, the system SHALL reject more than one `--pid`, and `--pid` combined with a positional argument, with an error before resolving anything.
+The system SHALL accept `--pid <PID>`, with the shorthand `-p`, to attach to a process by PID, for any PID value. The flag SHALL be repeatable, and SHALL be allowed together with positional targets. Each `--pid` SHALL be one target, as defined by the multi-stream capability.
 
 #### Scenario: Attach by PID below the port range
 - **WHEN** a process with PID 3000 exists and the user runs `specter --pid 3000`
@@ -58,12 +58,12 @@ The system SHALL accept `--pid <PID>`, with the shorthand `-p`, to attach to a p
 - **THEN** Specter exits with a non-zero status and an error that says no process with PID 3000 exists
 
 #### Scenario: Two PIDs
-- **WHEN** the user runs `specter --pid 3000 --pid 4000`
-- **THEN** Specter exits with a non-zero status and an error that says only one target is supported for now
+- **WHEN** processes with PIDs 3000 and 4000 exist and the user runs `specter --pid 3000 --pid 4000`
+- **THEN** Specter attaches to both, with the labels `pid:3000` and `pid:4000`
 
 #### Scenario: PID and a positional target
-- **WHEN** the user runs `specter 8080 --pid 3000`
-- **THEN** Specter exits with a non-zero status and an error that says to give either a target or `--pid`, not both
+- **WHEN** a server listens on port 8080, a process with PID 3000 exists, and the user runs `specter 8080 --pid 3000`
+- **THEN** Specter attaches to both, with the labels `:8080` and `pid:3000`
 
 #### Scenario: Invalid PID value
 - **WHEN** the user runs `specter --pid 0` or `specter --pid abc`

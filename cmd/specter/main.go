@@ -18,12 +18,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/YasserYG8/Specter/internal/pipeline"
-	"github.com/YasserYG8/Specter/internal/procwatch"
 	"github.com/YasserYG8/Specter/internal/resolver"
 	"github.com/YasserYG8/Specter/internal/source"
-	"github.com/YasserYG8/Specter/internal/source/selector"
-	"github.com/YasserYG8/Specter/internal/source/strace"
-	"github.com/YasserYG8/Specter/internal/ui"
 	"github.com/YasserYG8/Specter/internal/util"
 )
 
@@ -60,12 +56,15 @@ func buildVersionString() string {
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "specter [port|container|project]",
+		Use:   "specter [port|container|project]...",
 		Short: "Live stdout/stderr stream from any server by port, PID, or container",
 		Long: `Specter attaches to any active server process by listening port, container name, project
 name, or PID, and streams its stdout and stderr directly to your terminal.
 
 A bare number is always a port. To attach to a process by its PID, use --pid.
+
+Give several targets (up to 8) to follow them together. Every line then starts with the name of its target,
+for example ':3000 | GET /api 200'. --pid can be repeated and mixed with other targets.
 
 Running 'specter' without arguments launches an interactive discovery picker.
 Zero configuration, zero wrappers, read-only.`,
@@ -83,6 +82,11 @@ Zero configuration, zero wrappers, read-only.`,
   # Attach directly to a known process ID (PID); a bare number is always a port
   specter --pid 14280
   specter -p 14280
+
+  # Follow several targets at once: every line starts with its target (':3000 | ...', 'web | ...')
+  specter 3000 4000
+  specter 3000 web --pid 14280
+  specter --pid 14280 --pid 14281
 
   # Filter logs by minimum severity level (debug, info, warn, error)
   specter 3000 --level warn
@@ -107,10 +111,13 @@ Zero configuration, zero wrappers, read-only.`,
   specter 3000 --no-color`,
 		Version:      buildVersionString(),
 		SilenceUsage: true,
-		Args:         cobra.RangeArgs(0, 1),
+		Args:         cobra.ArbitraryArgs, // the limit of 8 targets is checked in RunE, where the message can say so
 		ValidArgsFunction: func(c *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-			if len(args) != 0 {
-				return nil, cobra.ShellCompDirectiveNoFileComp
+			// Every position takes a target, so every position gets completions. A target that is already on the
+			// line is not offered again.
+			given := make(map[string]bool, len(args))
+			for _, a := range args {
+				given[strings.ToLower(a)] = true
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -128,7 +135,7 @@ Zero configuration, zero wrappers, read-only.`,
 			for _, p := range ports {
 				if p.Port > 0 {
 					portStr := strconv.Itoa(p.Port)
-					if toComplete == "" || strings.HasPrefix(portStr, toComplete) {
+					if !given[portStr] && (toComplete == "" || strings.HasPrefix(portStr, toComplete)) {
 						cleanProc := strings.Map(func(r rune) rune {
 							if r == '\t' || r == '\n' || r == '\r' {
 								return ' '
@@ -166,7 +173,7 @@ Zero configuration, zero wrappers, read-only.`,
 
 				if p.ContainerName != "" && !seenContainers[p.ContainerName] {
 					seenContainers[p.ContainerName] = true
-					if toComplete == "" || strings.HasPrefix(p.ContainerName, toComplete) {
+					if !given[strings.ToLower(p.ContainerName)] && (toComplete == "" || strings.HasPrefix(p.ContainerName, toComplete)) {
 						desc := "docker container"
 						if p.Image != "" {
 							desc = fmt.Sprintf("docker container (%s)", p.Image)
@@ -177,7 +184,7 @@ Zero configuration, zero wrappers, read-only.`,
 
 				if p.ProjectName != "" && !seenProjects[p.ProjectName] {
 					seenProjects[p.ProjectName] = true
-					if toComplete == "" || strings.HasPrefix(strings.ToLower(p.ProjectName), strings.ToLower(toComplete)) {
+					if !given[strings.ToLower(p.ProjectName)] && (toComplete == "" || strings.HasPrefix(strings.ToLower(p.ProjectName), strings.ToLower(toComplete))) {
 						desc := fmt.Sprintf("project on :%d", p.Port)
 						completions = append(completions, fmt.Sprintf("%s\t%s", p.ProjectName, desc))
 					}
@@ -188,7 +195,8 @@ Zero configuration, zero wrappers, read-only.`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// strace gets a parent-death signal tied to the thread that starts it, so that thread must live as
-			// long as Specter does. This goroutine does, and it is never unlocked.
+			// long as Specter does. This goroutine does, and it is never unlocked. Every session is started
+			// from it (see Session.Start).
 			runtime.LockOSThread()
 
 			if flagNoColor {
@@ -200,8 +208,12 @@ Zero configuration, zero wrappers, read-only.`,
 				return err
 			}
 
-			// Reject --pid values that cannot be used, before anything is resolved or attached
-			if err := validatePIDFlag(flagPIDs, args); err != nil {
+			// Reject --pid values that cannot be used, and too many targets, before anything is resolved or
+			// attached
+			if err := validatePIDFlag(flagPIDs); err != nil {
+				return err
+			}
+			if err := validateTargetCount(args, flagPIDs); err != nil {
 				return err
 			}
 
@@ -231,363 +243,123 @@ Zero configuration, zero wrappers, read-only.`,
 			defer cancelRun(nil)
 
 			res := resolver.NewDefaultResolver(nil, "")
-			var target *source.Target
 
-			if len(flagPIDs) == 1 {
-				// An explicit PID, whatever its value: never checked as a port
-				t, err := resolvePIDTarget(ctx, res, flagPIDs[0])
+			// 1. Resolve every target before anything is attached. The first failure stops the run.
+			specs := buildTargetSpecs(args, flagPIDs)
+			var resolved []resolvedTarget
+			if len(specs) == 0 {
+				t, err := pickTarget(ctx, res)
 				if err != nil {
 					return err
 				}
-				target = t
-			} else if len(args) == 0 {
-				services, err := res.DiscoverServices(ctx)
-				if err != nil {
-					return fmt.Errorf("failed to discover active services: %w", err)
+				if t == nil {
+					return nil // the picker was closed without a choice
 				}
-
-				selected, err := ui.SelectService(services, ui.PickerConfig{
-					In:       os.Stdin,
-					Out:      os.Stderr,
-					UseColor: !flagNoColor && !color.NoColor,
-				})
-				if err != nil {
-					if errors.Is(err, ui.ErrPickerAborted) {
-						return nil
-					}
-					return err
-				}
-				if selected == nil {
-					return nil
-				}
-
-				if selected.Kind == resolver.ServiceKindDocker {
-					if selected.Port > 0 {
-						t, err := res.ResolvePort(ctx, selected.Port)
-						if err == nil {
-							target = t
-						}
-					}
-					if target == nil {
-						targetName := selected.ContainerName
-						if targetName == "" {
-							targetName = selected.ContainerID
-						}
-						t, err := res.ResolveContainer(ctx, targetName)
-						if err != nil {
-							return err
-						}
-						target = t
-					}
-				} else {
-					if selected.Port > 0 {
-						t, err := res.ResolvePort(ctx, selected.Port)
-						if err != nil {
-							return err
-						}
-						target = t
-					} else if selected.PID > 0 {
-						t, err := res.ResolvePID(ctx, selected.PID)
-						if err != nil {
-							return err
-						}
-						target = t
-					}
-				}
+				resolved = []resolvedTarget{{Label: "target", Target: t}}
 			} else {
-				targetArg := args[0]
-				val, intErr := strconv.Atoi(targetArg)
-
-				if intErr == nil && val > 0 {
-					t, err := resolveNumericTarget(ctx, res, val)
+				for _, spec := range specs {
+					t, err := resolveSpec(ctx, res, spec)
 					if err != nil {
 						// The empty-port diagnostic lists the active ports, so it is printed instead of the bare error
 						var noProcErr *resolver.NoProcessOnPortError
 						if errors.As(err, &noProcErr) {
 							fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
 							cmd.SilenceErrors = true
+							return err
+						}
+						if len(specs) > 1 {
+							return fmt.Errorf("%s: %w", spec.Label, err)
 						}
 						return err
 					}
-					target = t
-				} else {
-					t, err := res.ResolveContainer(ctx, targetArg)
-					if err != nil {
-						// Check if targetArg matches an active project name
-						if services, sErr := res.DiscoverServices(ctx); sErr == nil {
-							for _, s := range services {
-								if strings.EqualFold(s.ProjectName, targetArg) {
-									if s.Kind == resolver.ServiceKindDocker {
-										if s.Port > 0 {
-											if dt, dErr := res.ResolvePort(ctx, s.Port); dErr == nil {
-												target = dt
-												break
-											}
-										}
-										cName := s.ContainerName
-										if cName == "" {
-											cName = s.ContainerID
-										}
-										if dt, dErr := res.ResolveContainer(ctx, cName); dErr == nil {
-											target = dt
-											break
-										}
-									} else {
-										if s.Port > 0 {
-											if ht, hErr := res.ResolvePort(ctx, s.Port); hErr == nil {
-												target = ht
-												break
-											}
-										} else if s.PID > 0 {
-											if ht, hErr := res.ResolvePID(ctx, s.PID); hErr == nil {
-												target = ht
-												break
-											}
-										}
-									}
-								}
-							}
-						}
-						if target == nil {
-							return fmt.Errorf("argument %q is not a valid port, container, or project (to attach by PID, use --pid): %w", targetArg, err)
-						}
-					} else {
-						target = t
+					if t == nil {
+						return errors.New("failed to resolve target")
 					}
+					resolved = append(resolved, resolvedTarget{Label: spec.Label, Target: t})
 				}
-			}
-
-			if target == nil {
-				return errors.New("failed to resolve target")
 			}
 
 			// Discover pre-existing child processes (only for host PIDs)
-			if target.PID > 0 {
-				inspector := resolver.NewProcessInspector("")
-				if flagTree {
-					target.Children = inspector.FindChildProcessTree(target.PID, 3)
-				} else {
-					if kids, err := inspector.FindChildPIDs(target.PID); err == nil {
-						target.Children = kids
+			inspector := resolver.NewProcessInspector("")
+			for _, r := range resolved {
+				if r.Target.PID > 0 {
+					if flagTree {
+						r.Target.Children = inspector.FindChildProcessTree(r.Target.PID, 3)
+					} else if kids, err := inspector.FindChildPIDs(r.Target.PID); err == nil {
+						r.Target.Children = kids
 					}
 				}
 			}
 
-			// Notice if stdout and stderr are discarded to /dev/null
-			if strings.Contains(target.Stdout, "/dev/null") && strings.Contains(target.Stderr, "/dev/null") {
-				fmt.Fprintf(os.Stderr, "%s Target process has stdout/stderr redirected to /dev/null; no console logs are emitted.\n", color.YellowString("[specter:notice]"))
+			// 2. The same process (or container) given twice is followed once
+			resolved, dupNotices := dedupeTargets(resolved)
+			for _, n := range dupNotices {
+				printNotice(os.Stderr, n)
+			}
+			multi := len(resolved) > 1
+
+			// 3. Filter configuration, shared by all targets
+			filterOpts := pipeline.FilterOptions{
+				MinLevel:   pipeline.ParseSeverity(flagLevel),
+				Grep:       flagGrep,
+				OnlyStderr: flagStderr,
 			}
 
-			// Select capture source
-			sourceSelector := selector.NewSelector(flagSource, flagTree)
-			src, reason, selectErr := sourceSelector.Select(target)
-			if selectErr != nil {
-				return selectErr
+			// 4. Start every session, one after the other. If one fails, the others are stopped and the run ends
+			// before any log line is printed.
+			env := newRunEnv(runConfig{
+				Source:        flagSource,
+				Tree:          flagTree,
+				Grep:          flagGrep,
+				Duration:      flagDuration,
+				NoOutputDelay: noOutputNoticeDelay,
+			}, os.Stderr, filterOpts, multi)
+			sessions := make([]*Session, len(resolved))
+			for i, r := range resolved {
+				sessions[i] = newSession(env, i, r.Label, r.Target)
 			}
-			defer func() { _ = src.Stop() }() // src may be replaced by the fallback below
-			ebpfNote := sourceSelector.EBPFNote
-
-			// The source and the pipeline get their own contexts. The process watcher stops the source when the
-			// target is gone and gives the pipeline a moment to print what was already read, while the user's
-			// interrupt (ctx) stops both at once.
-			srcCtx, cancelSrc := context.WithCancelCause(ctx)
-			defer cancelSrc(nil)
-			pipeCtx, cancelPipe := context.WithCancel(ctx)
-			defer cancelPipe()
-
-			// eBPF passes the selector's checks without having been loaded: the kernel decides when the program is
-			// loaded. So it is started now, before Specter says which source it uses, and a refusal ends in the one
-			// line of the slowdown notice instead of a "Source: ebpf" line followed by a second source.
-			var chunks <-chan source.Chunk
-			var errs <-chan error
-			started := false
-			if src.Name() == "ebpf" {
-				wireNotices(src)
-				c, e, startErr := startNow(srcCtx, src, *target)
-				if startErr != nil {
-					_ = src.Stop()
-					if flagSource == "ebpf" {
-						return selector.ForcedEBPFError(startErr) // the user asked for eBPF: no fallback
-					}
-					ebpfNote = startErr.Error()
-					src = strace.NewSource(strace.Options{FollowTree: flagTree})
-					reason = "standard process tracing (strace)"
-				} else {
-					chunks, errs, started = c, e, true
+			defer func() {
+				for i := len(sessions) - 1; i >= 0; i-- {
+					sessions[i].Stop()
 				}
+			}()
+			if err := startSessions(ctx, sessions); err != nil {
+				return err
 			}
 
-			// Check ptrace permissions upfront if strace source is selected
-			if src.Name() == "strace" {
-				// Root can attach at ptrace_scope 1 and 2, so it gets no warning there
-				if permErr := strace.CheckPtracePermissionsAs("", os.Geteuid()); permErr != nil {
-					fmt.Fprintf(os.Stderr, "%s %v\n", color.YellowString("[specter:warning]"), permErr)
-				}
+			if err := sessions[0].filter.GrepError(); err != nil {
+				printNotice(os.Stderr, fmt.Sprintf("--grep %q is not a valid regular expression (%v); matching it as literal text.", flagGrep, err))
 			}
 
-			// Header notice
-			headerTag := color.CyanString("[specter]")
-			cmdSummary := strings.Join(target.Cmdline, " ")
-			if len(cmdSummary) > 60 {
-				cmdSummary = cmdSummary[:57] + "..."
-			}
-			if target.Container != "" {
-				if target.Port > 0 {
-					fmt.Fprintf(os.Stderr, "%s Attaching to container %s on port :%d (%s)\n", headerTag, target.Container, target.Port, cmdSummary)
-				} else {
-					fmt.Fprintf(os.Stderr, "%s Attaching to container %s (%s)\n", headerTag, target.Container, cmdSummary)
-				}
-			} else if target.Port > 0 {
-				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d on port :%d (%s)\n", headerTag, target.PID, target.Port, cmdSummary)
-			} else {
-				fmt.Fprintf(os.Stderr, "%s Attaching to PID %d (%s)\n", headerTag, target.PID, cmdSummary)
-			}
-			if len(target.Children) > 0 {
-				childStrList := make([]string, len(target.Children))
-				for i, c := range target.Children {
-					childStrList[i] = strconv.Itoa(c)
-				}
-				fmt.Fprintf(os.Stderr, "%s Discovered active child worker(s): PID %s\n", headerTag, strings.Join(childStrList, ", "))
-			}
-			fmt.Fprintf(os.Stderr, "%s Source: %s (%s)\n", headerTag, color.GreenString(src.Name()), reason)
-			if msg := slowdownNoticeFor(src.Name(), ebpfNote); msg != "" {
-				printNotice(os.Stderr, msg)
-			}
-
-			if !started {
-				wireNotices(src)
-				chunks, errs = src.Start(srcCtx, *target)
-
-				// Fallback: If an auto-detected non-strace source fails immediately to start, fall back to strace
-				if flagSource == "" && src.Name() != "strace" {
-					select {
-					case err, ok := <-errs:
-						if ok && err != nil {
-							fmt.Fprintf(os.Stderr, "%s Auto-detected source '%s' unavailable (%v); falling back to strace\n",
-								headerTag, src.Name(), err)
-							src = strace.NewSource(strace.Options{FollowTree: flagTree})
-							wireNotices(src)
-							printNotice(os.Stderr, slowdownNotice) // the first source did not slow the target, this one does
-							chunks, errs = src.Start(srcCtx, *target)
-						}
-					default:
-						// Started normally
-					}
-				}
-			}
-
-			// --duration: the time starts now, when the source has started
+			// --duration: the time starts now, when the sources have started
 			if flagDuration > 0 {
 				limit := time.AfterFunc(flagDuration, func() { cancelRun(errDurationElapsed) })
 				defer limit.Stop()
 			}
 
-			// Watch the target process, for sources that cannot tell when it ends. strace usually does, with the
-			// exit code, but the file source only tails a file and would wait forever.
-			var watcherGone atomic.Bool
-			if watchesPID(src, target) {
-				gone := procwatch.Watch(pipeCtx, target.PID, procwatch.Options{})
-				go func() {
-					select {
-					case <-gone:
-						watcherGone.Store(true)
-						cancelSrc(errTargetGone)
-						select {
-						case <-time.After(drainGrace):
-							cancelPipe()
-						case <-pipeCtx.Done():
-						}
-					case <-pipeCtx.Done():
-					}
-				}()
-			}
-
-			// 1. Line assembler
-			assembler := pipeline.NewLineAssembler(pipeline.DefaultIdleTimeout)
-			lines := assembler.Assemble(pipeCtx, chunks)
-
-			// 2. Multi-line stack trace grouper
-			grouper := pipeline.NewStackTraceGrouper(pipeline.DefaultTraceIdleTimeout)
-			entries := grouper.Group(pipeCtx, lines)
-
-			// 3. Filter configuration
-			minSeverity := pipeline.ParseSeverity(flagLevel)
-			filter := pipeline.NewFilter(pipeline.FilterOptions{
-				MinLevel:   minSeverity,
-				Grep:       flagGrep,
-				OnlyStderr: flagStderr,
-			})
-
-			if err := filter.GrepError(); err != nil {
-				printNotice(os.Stderr, fmt.Sprintf("--grep %q is not a valid regular expression (%v); matching it as literal text.", flagGrep, err))
-			}
-
-			// With --grep, hold each stack trace until it ends, so a match on any of its lines shows the whole
-			// trace. Without --grep nothing is held and output stays immediate.
-			if flagGrep != "" {
-				entries = pipeline.NewTraceHolder(filter.MatchText, pipeline.DefaultTraceIdleTimeout, pipeline.MaxHeldTraceLines).Hold(pipeCtx, entries)
-			}
-
-			// 4. Renderer configuration
+			// 5. Renderer configuration
 			renderer := pipeline.NewRenderer(pipeline.RendererOptions{
 				NoColor:   flagNoColor,
 				Raw:       flagRaw,
 				ForceJSON: flagJSON,
 			})
 
-			// 5. Stream styled entries to terminal
-			sawEntry, stopNoOutputNotice := startNoOutputNotice(pipeCtx, noOutputNoticeDelay, os.Stderr)
-			defer stopNoOutputNotice()
-			for entry := range entries {
-				sawEntry() // counted before filters: output hidden by --grep or --level is not silence
-				if !filter.Matches(&entry) {
-					continue
+			// 6. Stream styled entries to the terminal. With several targets every line starts with its tag.
+			ow := &outputWriter{w: os.Stdout}
+			if multi {
+				labels := make([]string, len(resolved))
+				for i, r := range resolved {
+					labels[i] = r.Label
 				}
-
-				rendered := renderer.Render(&entry)
-				if entry.IsPartial {
-					fmt.Print(rendered)
-				} else {
-					fmt.Println(rendered)
-				}
+				ow.tag = newTagger(labels, !flagNoColor && !color.NoColor)
+			}
+			anyEnded, err := runSessions(ctx, sessions, env, renderer, ow)
+			if err != nil {
+				return err
 			}
 
-			// Check for source startup or runtime errors (draining without blocking)
-			srcErr, ok := <-errs
-			if ok && srcErr != nil && ctx.Err() == nil && !watcherGone.Load() {
-				return srcErr
-			}
-
-			// Say how the run ended. "Detached cleanly" is only for the user's interrupt; when the target ended on
-			// its own, Specter says how and exits with status 1.
-			report := endReport{
-				Interrupted: ctx.Err() != nil,
-				PID:         target.PID,
-				Container:   target.Container,
-				WatcherGone: watcherGone.Load(),
-			}
-			if errors.Is(context.Cause(ctx), errDurationElapsed) {
-				report.After = flagDuration
-			}
-			if es, ok := src.(interface {
-				ExitStatus() (source.ExitStatus, bool)
-			}); ok {
-				if status, known := es.ExitStatus(); known {
-					report.Exit = &status
-				}
-			}
-			if src.Name() == "docker" && !report.Interrupted {
-				// docker logs -f ends when the container stops; ask once for the exit code
-				report.DockerEnded = true
-				if ce, ok := src.(interface {
-					ContainerExit(context.Context) (int, bool)
-				}); ok {
-					if code, known := ce.ContainerExit(ctx); known {
-						report.ContainerCode = &code
-					}
-				}
-			}
-			if reportEnd(os.Stderr, headerTag, report) != 0 {
+			// Each session said how it ended. The exit status is 1 when a target ended on its own.
+			if anyEnded {
 				cmd.SilenceErrors = true
 				return errTargetEnded
 			}
@@ -672,10 +444,11 @@ func printNotice(w io.Writer, msg string) {
 	fmt.Fprintf(w, "%s %s\n", color.YellowString("[specter:notice]"), msg)
 }
 
-// wireNotices lets sources that can explain missing output print their notices to stderr.
-func wireNotices(src source.Source) {
+// wireNotices lets sources that can explain missing output print their notices to w (stderr, with the target label
+// in front when several targets run).
+func wireNotices(src source.Source, w io.Writer) {
 	if n, ok := src.(interface{ SetNotifier(func(string)) }); ok {
-		n.SetNotifier(func(msg string) { printNotice(os.Stderr, msg) })
+		n.SetNotifier(func(msg string) { printNotice(w, msg) })
 	}
 }
 

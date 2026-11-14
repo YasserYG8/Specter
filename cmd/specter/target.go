@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	pathpkg "path"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/YasserYG8/Specter/internal/resolver"
@@ -78,35 +80,166 @@ func processName(t *source.Target) string {
 	return pathpkg.Base(t.Cmdline[0])
 }
 
-// validatePIDFlag checks the --pid values before anything is resolved. The flag accepts several values so that
-// several targets can be added later without changing it, but only one is supported now.
-func validatePIDFlag(pids []int, args []string) error {
-	if len(pids) == 0 {
-		return nil
-	}
-	if len(pids) > 1 {
-		return &util.DiagnosticError{
-			Err:         util.ErrInvalidFlag,
-			Title:       "More than one --pid was given",
-			Explanation: "Only one target is supported for now.",
-			Remediation: "Give a single PID, for example: specter --pid 14280",
-		}
-	}
-	if len(args) > 0 {
-		return &util.DiagnosticError{
-			Err:         util.ErrInvalidFlag,
-			Title:       fmt.Sprintf("Both a target (%s) and --pid were given", args[0]),
-			Explanation: "Give either a target or --pid, not both.",
-			Remediation: fmt.Sprintf("Run either: specter %s    or: specter --pid %d", args[0], pids[0]),
-		}
-	}
-	if pids[0] <= 0 {
-		return &util.DiagnosticError{
-			Err:         util.ErrInvalidFlag,
-			Title:       fmt.Sprintf("Invalid --pid %d", pids[0]),
-			Explanation: "The PID must be a positive whole number.",
-			Remediation: "Find the PID with: ps aux | grep <name>    or: ss -ltnp",
+// maxTargets is how many targets one run can follow. Every target costs a capture session (and an eBPF target
+// costs a kernel program), so the number is bounded.
+const maxTargets = 8
+
+// validatePIDFlag checks the --pid values before anything is resolved. The flag may be repeated and may be mixed
+// with positional targets; every value must be a positive whole number.
+func validatePIDFlag(pids []int) error {
+	for _, pid := range pids {
+		if pid <= 0 {
+			return &util.DiagnosticError{
+				Err:         util.ErrInvalidFlag,
+				Title:       fmt.Sprintf("Invalid --pid %d", pid),
+				Explanation: "The PID must be a positive whole number.",
+				Remediation: "Find the PID with: ps aux | grep <name>    or: ss -ltnp",
+			}
 		}
 	}
 	return nil
+}
+
+// validateTargetCount refuses more than maxTargets targets (positional arguments and --pid together). cobra's own
+// message would not say what the limit is, so Specter checks it.
+func validateTargetCount(args []string, pids []int) error {
+	if n := len(args) + len(pids); n > maxTargets {
+		return &util.DiagnosticError{
+			Err:         util.ErrInvalidFlag,
+			Title:       fmt.Sprintf("Too many targets (%d)", n),
+			Explanation: fmt.Sprintf("Specter follows at most %d targets in one run.", maxTargets),
+			Remediation: fmt.Sprintf("Give %d targets or fewer, or run Specter twice.", maxTargets),
+		}
+	}
+	return nil
+}
+
+// targetSpec is one target as the user gave it, before it is resolved.
+type targetSpec struct {
+	Label string // how the target is named in the output: ":3000", "pid:1234", or the argument as written
+	Arg   string // the positional argument; empty for --pid
+	PID   int    // the --pid value; 0 for a positional argument
+}
+
+// targetLabel names a positional argument. A whole number from 1 to 65535 is a port, a larger one is a PID, and
+// anything else (a container or a project) keeps the text the user typed.
+func targetLabel(arg string) string {
+	if val, err := strconv.Atoi(arg); err == nil && val > 0 {
+		if val > maxPort {
+			return fmt.Sprintf("pid:%d", val)
+		}
+		return fmt.Sprintf(":%d", val)
+	}
+	return arg
+}
+
+// buildTargetSpecs lists the targets in the order they were given: positional arguments first, then --pid values.
+func buildTargetSpecs(args []string, pids []int) []targetSpec {
+	specs := make([]targetSpec, 0, len(args)+len(pids))
+	for _, a := range args {
+		specs = append(specs, targetSpec{Label: targetLabel(a), Arg: a})
+	}
+	for _, p := range pids {
+		specs = append(specs, targetSpec{Label: fmt.Sprintf("pid:%d", p), PID: p})
+	}
+	return specs
+}
+
+// fullResolver is everything resolving one argument needs. Tests use a fake.
+type fullResolver interface {
+	targetResolver
+	ResolveContainer(ctx context.Context, nameOrID string) (*source.Target, error)
+	DiscoverServices(ctx context.Context) ([]resolver.DiscoveredService, error)
+}
+
+// resolveSpec resolves one target with the same rules as a single target: --pid is never a port, a positive
+// number is a port or (above 65535) a PID, and anything else is tried as a container, then as a project name.
+func resolveSpec(ctx context.Context, res fullResolver, spec targetSpec) (*source.Target, error) {
+	if spec.Arg == "" {
+		return resolvePIDTarget(ctx, res, spec.PID)
+	}
+
+	if val, err := strconv.Atoi(spec.Arg); err == nil && val > 0 {
+		return resolveNumericTarget(ctx, res, val)
+	}
+
+	t, err := res.ResolveContainer(ctx, spec.Arg)
+	if err == nil {
+		return t, nil
+	}
+	// Check if the argument matches an active project name
+	if services, sErr := res.DiscoverServices(ctx); sErr == nil {
+		for _, s := range services {
+			if !strings.EqualFold(s.ProjectName, spec.Arg) {
+				continue
+			}
+			if pt := resolveProjectService(ctx, res, s); pt != nil {
+				return pt, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("argument %q is not a valid port, container, or project (to attach by PID, use --pid): %w", spec.Arg, err)
+}
+
+// resolveProjectService resolves a discovered service of a project to a target, or nil when none of its ways work.
+func resolveProjectService(ctx context.Context, res fullResolver, s resolver.DiscoveredService) *source.Target {
+	if s.Kind == resolver.ServiceKindDocker {
+		if s.Port > 0 {
+			if t, err := res.ResolvePort(ctx, s.Port); err == nil {
+				return t
+			}
+		}
+		name := s.ContainerName
+		if name == "" {
+			name = s.ContainerID
+		}
+		if t, err := res.ResolveContainer(ctx, name); err == nil {
+			return t
+		}
+		return nil
+	}
+	if s.Port > 0 {
+		if t, err := res.ResolvePort(ctx, s.Port); err == nil {
+			return t
+		}
+	} else if s.PID > 0 {
+		if t, err := res.ResolvePID(ctx, s.PID); err == nil {
+			return t
+		}
+	}
+	return nil
+}
+
+// resolvedTarget is a target that was found, with its label.
+type resolvedTarget struct {
+	Label  string
+	Target *source.Target
+}
+
+// dedupeTargets removes targets that are the same process or container as an earlier one, and says why in one
+// notice per target it drops. It must run after child discovery, so a PID that is a worker of an earlier target
+// is known. The first target keeps the label.
+func dedupeTargets(in []resolvedTarget) (kept []resolvedTarget, notices []string) {
+	for _, cur := range in {
+		dup := ""
+		for _, k := range kept {
+			switch {
+			case cur.Target.PID > 0 && cur.Target.PID == k.Target.PID:
+				dup = fmt.Sprintf("%s is the same process as %s (PID %d). Following it once, as %s.", cur.Label, k.Label, k.Target.PID, k.Label)
+			case cur.Target.PID > 0 && slices.Contains(k.Target.Children, cur.Target.PID):
+				dup = fmt.Sprintf("%s (PID %d) is a worker that %s already follows. Following it once, as %s.", cur.Label, cur.Target.PID, k.Label, k.Label)
+			case cur.Target.Container != "" && cur.Target.Container == k.Target.Container:
+				dup = fmt.Sprintf("%s is the same container as %s (%s). Following it once, as %s.", cur.Label, k.Label, k.Target.Container, k.Label)
+			}
+			if dup != "" {
+				break
+			}
+		}
+		if dup != "" {
+			notices = append(notices, dup)
+			continue
+		}
+		kept = append(kept, cur)
+	}
+	return kept, notices
 }

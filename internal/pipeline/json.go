@@ -159,8 +159,12 @@ func FormatSingleLineJSON(jl *JSONLog, colorize bool) string {
 	// 1. Timestamp
 	if jl.Timestamp != "" {
 		tsStr := jl.Timestamp
-		// Shorten ISO 8601 timestamps like "2026-10-10T10:00:00.123Z" to "10:00:00.123"
-		if len(tsStr) > 19 && strings.Contains(tsStr, "T") {
+		if t, err := time.Parse(time.RFC3339Nano, tsStr); err == nil {
+			// A timestamp with a time zone ("...Z" or "...+02:00") is shown in local time with milliseconds, the same
+			// way as a numeric timestamp, so two servers show the same moment at the same clock time.
+			tsStr = t.Local().Format("15:04:05.000")
+		} else if len(tsStr) > 19 && strings.Contains(tsStr, "T") {
+			// Anything else: shorten an ISO 8601 timestamp like "2026-10-10T10:00:00.123" to "10:00:00.123"
 			parts := strings.Split(tsStr, "T")
 			if len(parts) == 2 {
 				tsStr = strings.TrimSuffix(parts[1], "Z")

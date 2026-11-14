@@ -123,10 +123,21 @@ func TestValidArgsFunction_PortDiscovery(t *testing.T) {
 		t.Errorf("expected only 8080 for prefix '8', got %v", filtered)
 	}
 
-	// 3. Positional argument already provided
-	alreadySupplied, _ := cmd.ValidArgsFunction(cmd, []string{"3000"}, "")
-	if len(alreadySupplied) != 0 {
-		t.Errorf("expected no completions when argument already given, got %v", alreadySupplied)
+	// 3. A second position still gets completions, but not the target that is already on the line
+	second, _ := cmd.ValidArgsFunction(cmd, []string{"3000"}, "")
+	if len(second) != 4 {
+		t.Fatalf("expected 4 completions for the second target, got %d: %v", len(second), second)
+	}
+	for _, c := range second {
+		if strings.HasPrefix(c, "3000\t") {
+			t.Errorf("3000 is already given and should not be offered again, got %q", c)
+		}
+	}
+
+	// 4. The same holds for a later position
+	third, _ := cmd.ValidArgsFunction(cmd, []string{"3000", "8080"}, "9")
+	if len(third) != 2 {
+		t.Errorf("expected 9000 and 9001 for the third target, got %v", third)
 	}
 }
 

@@ -241,19 +241,18 @@ func TestValidatePIDFlag(t *testing.T) {
 	cases := []struct {
 		name    string
 		pids    []int
-		args    []string
 		wantErr string // empty means no error
 	}{
-		{"not used", nil, []string{"3000"}, ""},
-		{"one PID", []int{3000}, nil, ""},
-		{"two values", []int{3000, 4000}, nil, "Only one target is supported for now"},
-		{"positional target as well", []int{3000}, []string{"8080"}, "Give either a target or --pid, not both"},
-		{"zero", []int{0}, nil, "The PID must be a positive whole number"},
-		{"negative", []int{-5}, nil, "The PID must be a positive whole number"},
+		{"not used", nil, ""},
+		{"one PID", []int{3000}, ""},
+		{"two values", []int{3000, 4000}, ""},
+		{"one bad value among good ones", []int{3000, 0, 4000}, "Invalid --pid 0"},
+		{"zero", []int{0}, "The PID must be a positive whole number"},
+		{"negative", []int{-5}, "The PID must be a positive whole number"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validatePIDFlag(tc.pids, tc.args)
+			err := validatePIDFlag(tc.pids)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -278,10 +277,7 @@ func TestCLI_PIDFlagIsValidatedBeforeResolving(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{"two flags", []string{"--pid", "3000", "--pid", "4000"}, "Only one target is supported for now"},
-		{"comma list", []string{"--pid", "3000,4000"}, "Only one target is supported for now"},
-		{"short form", []string{"-p", "3000", "-p", "4000"}, "Only one target is supported for now"},
-		{"with a positional target", []string{"8080", "--pid", "3000"}, "Give either a target or --pid, not both"},
+		{"one bad value among good ones", []string{"--pid", "3000", "--pid", "0"}, "The PID must be a positive whole number"},
 		{"zero", []string{"--pid", "0"}, "The PID must be a positive whole number"},
 		{"negative", []string{"--pid=-7"}, "The PID must be a positive whole number"},
 		{"not a number", []string{"--pid", "abc"}, "The PID must be a positive whole number"},

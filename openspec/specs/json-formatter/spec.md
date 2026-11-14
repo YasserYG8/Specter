@@ -68,3 +68,22 @@ The JSON formatter SHALL look for the timestamp in the keys `timestamp`, `time`,
 #### Scenario: Value of another type stays a field
 - **WHEN** a JSON line's only timestamp key is `"time":{"ms":12}` or `"time":""`
 - **THEN** the line has no timestamp, and `time` is kept among the extra fields
+
+### Requirement: Zoned String Timestamps in Local Time
+When a JSON log's timestamp is a string in RFC 3339 form with a time zone (ending in `Z` or in an offset such as `+02:00`), the formatter SHALL show it as `HH:MM:SS.mmm` in local time, the same way as a numeric timestamp. A string timestamp without a time zone, or one that is not RFC 3339, SHALL NOT be converted: an ISO 8601 value with a `T` is shown as its time part (the text after the `T`), and any other string is shown as written. `--json` and `--raw` output SHALL NOT change.
+
+#### Scenario: UTC timestamp
+- **WHEN** the local time zone is UTC+2 and a JSON line has `"timestamp":"2026-10-10T10:00:00.123Z"`
+- **THEN** the timestamp is shown as `12:00:00.123`
+
+#### Scenario: Timestamp with an offset
+- **WHEN** the local time zone is UTC and a JSON line has `"time":"2026-10-10T10:00:00+02:00"`
+- **THEN** the timestamp is shown as `08:00:00.000`
+
+#### Scenario: Same moment from two formats
+- **WHEN** one line has `"ts":1791626400123` and another has `"timestamp":"2026-10-10T10:00:00.123Z"`, which are the same moment
+- **THEN** both lines show the same timestamp text
+
+#### Scenario: No time zone
+- **WHEN** a JSON line has `"time":"2026-10-10 10:00:00"`
+- **THEN** the timestamp is shown as written, `2026-10-10 10:00:00`, with no conversion

@@ -34,14 +34,14 @@ $env:GOOS="linux"; $env:GOARCH="amd64"; go build -o specter ./cmd/specter
 
 ## Architecture
 
-The flow is resolver, then source, then pipeline, and it is wired together in the single `RunE` in `cmd/specter/main.go`.
+The flow is resolver, then source, then pipeline, and it is wired together by `RunE` in `cmd/specter/main.go`. A run follows 1 to 8 targets. Each target has its own `Session` (`session.go`: source, assembler, grouper, own `Filter`), started one after the other on the main goroutine (the `strace` parent-death signal is tied to that thread). `run.go` merges the sessions' entries in one output loop; with two or more targets `output.go` puts a tag on every line.
 
 ```
 arg or picker -> resolver -> source.Target -> selector -> Source
               -> chan Chunk -> LineAssembler -> StackTraceGrouper -> Filter -> Renderer -> stdout
 ```
 
-**Argument resolution** (`main.go`): a positive integer of 65535 or lower is a port and nothing else: an empty port returns `NoProcessOnPortError` (with a `Hint:` line when a process has that PID) and never falls back to a PID. A larger integer is a PID. `--pid` / `-p` attaches by PID for any value and cannot be combined with a positional target. The numeric rules live in `cmd/specter/target.go`. Port errors other than "no process found" are returned immediately. Anything else is tried as a container, then matched case-insensitively against discovered project names.
+**Argument resolution** (`main.go`): a positive integer of 65535 or lower is a port and nothing else: an empty port returns `NoProcessOnPortError` (with a `Hint:` line when a process has that PID) and never falls back to a PID. A larger integer is a PID. `--pid` / `-p` attaches by PID for any value; it can be repeated and mixed with positional targets (8 in all). The numeric rules live in `cmd/specter/target.go`. Port errors other than "no process found" are returned immediately. Anything else is tried as a container, then matched case-insensitively against discovered project names.
 
 **`internal/resolver`** produces a `source.Target`. It shells out to `lsof`, `ss`, and `docker`, and reads `/proc`. External commands and the proc root are injectable (`CommandRunner`, `procRoot`), which is how tests run on Windows without those tools. `discovery.go` and `project.go` supply the data for the picker and shell completions.
 
