@@ -80,25 +80,28 @@ func ParseJSONLog(line string) *JSONLog {
 	}
 
 	// 3. Extract timestamp
+	// Only a value that really looks like a timestamp is taken, and only that key is removed from the fields. A key
+	// with another kind of value (a duration like "time":45, an object, an empty string) stays a field, and the next
+	// key is tried.
 	for _, key := range []string{"timestamp", "time", "ts", "@timestamp"} {
-		if val, ok := data[key]; ok {
-			switch v := val.(type) {
-			case string:
+		val, ok := data[key]
+		if !ok {
+			continue
+		}
+		accepted := false
+		switch v := val.(type) {
+		case string:
+			if v != "" {
 				jl.Timestamp = v
-			case float64:
-				// Epoch ms or seconds
-				if v > 1e11 {
-					// ms
-					t := time.UnixMilli(int64(v))
-					jl.Timestamp = t.Format("15:04:05.000")
-				} else {
-					// seconds
-					sec := int64(v)
-					nsec := int64((v - float64(sec)) * 1e9)
-					t := time.Unix(sec, nsec)
-					jl.Timestamp = t.Format("15:04:05.000")
-				}
+				accepted = true
 			}
+		case float64:
+			if t, ok := numericTimestamp(v); ok {
+				jl.Timestamp = t.Format("15:04:05.000")
+				accepted = true
+			}
+		}
+		if accepted {
 			delete(data, key)
 			break
 		}
@@ -113,6 +116,40 @@ func ParseJSONLog(line string) *JSONLog {
 	jl.Fields = data
 
 	return jl
+}
+
+// Unix seconds for the start of 2000 and the start of 2100 (UTC). A number is only a timestamp inside this range.
+const (
+	minTimestampUnix = 946684800
+	maxTimestampUnix = 4102444800
+)
+
+// numericTimestamp turns a JSON number into a time. It picks the unit (seconds, milliseconds, microseconds or
+// nanoseconds) from the size of the number. The thresholds sit between the values of the years 2000 to 2099 in two
+// neighboring units, so a real timestamp never lands in the wrong unit. It returns false when the result is not in
+// the years 2000 to 2099, which also turns away durations, counters, zero and negative numbers.
+func numericTimestamp(v float64) (time.Time, bool) {
+	if v <= 0 {
+		return time.Time{}, false
+	}
+	var t time.Time
+	switch {
+	case v < 1e11:
+		sec := int64(v)
+		t = time.Unix(sec, int64((v-float64(sec))*1e9))
+	case v < 1e14:
+		t = time.UnixMilli(int64(v))
+	case v < 1e17:
+		t = time.UnixMicro(int64(v))
+	case v < 9e18: // stay below the int64 limit
+		t = time.Unix(0, int64(v))
+	default:
+		return time.Time{}, false
+	}
+	if u := t.Unix(); u < minTimestampUnix || u >= maxTimestampUnix {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // FormatSingleLineJSON renders a parsed JSONLog onto a clean single line with optional ANSI colors.

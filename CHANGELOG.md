@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- A JSON log line with a numeric timestamp in microseconds or nanoseconds now shows the right time. Specter used to read every number above `1e11` as milliseconds, so such a time looked normal but was wrong. It now picks the unit (seconds, milliseconds, microseconds or nanoseconds) from the size of the number. Specter's own test server writes `ts` in nanoseconds, so its lines were affected.
+- A number in `time` (or in another timestamp key) that is not a date between the years 2000 and 2099 now stays a normal field, for example `time=45`. It used to turn into a fake clock time and disappear from the line. When a timestamp key is not accepted, Specter tries the next one, so `{"time":45,"ts":1789000000123}` takes its time from `ts` and still shows `time=45`. An empty string, an object, an array, a boolean or null is not a timestamp either. String timestamps and `--json` output do not change.
 ## 0.2.0 (2026-11-14)
 ### Fixed
 - The notice about the target's own log file is quieter. It no longer appears for the internal log of an embedded database, such as the `LOG` file in the Turbopack cache of a Next.js dev server (a file named `LOG`, `LOG.old` or `LOG.old.<digits>` next to a file named `CURRENT`). It also no longer appears for names that only contain the letters `log`, such as `catalog.json` or `blog.sqlite`: `log` or `logs` must be a whole word in the file name or a folder name. Real log files such as `/var/log/app.log`, `access_log` or `~/.pm2/logs/api-out.txt` still give the notice. Names with no separator, such as `applog.txt`, no longer give it. The `strace` and `ebpf` engines now share one rule.
