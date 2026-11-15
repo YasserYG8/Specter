@@ -16,10 +16,12 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/YasserYG8/Specter/internal/pipeline"
 	"github.com/YasserYG8/Specter/internal/resolver"
 	"github.com/YasserYG8/Specter/internal/source"
+	"github.com/YasserYG8/Specter/internal/ui"
 	"github.com/YasserYG8/Specter/internal/util"
 )
 
@@ -67,6 +69,11 @@ Give several targets (up to 8) to follow them together. Every line then starts w
 for example ':3000 | GET /api 200'. --pid can be repeated and mixed with other targets.
 
 Running 'specter' without arguments launches an interactive discovery picker.
+
+While Specter streams in a terminal, press Esc to detach and pick another service, or Ctrl+C to quit.
+Typed text is not echoed into the logs; Enter adds an empty line. If Specter is killed with SIGKILL, the
+terminal can stay without echo: run 'stty sane' to fix it.
+
 Zero configuration, zero wrappers, read-only.`,
 		Example: `  # Launch interactive picker to select an active service or container
   specter
@@ -195,8 +202,8 @@ Zero configuration, zero wrappers, read-only.`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// strace gets a parent-death signal tied to the thread that starts it, so that thread must live as
-			// long as Specter does. This goroutine does, and it is never unlocked. Every session is started
-			// from it (see Session.Start).
+			// long as Specter does. This goroutine does, and it is never unlocked. Every session of every pass is
+			// started from it (see Session.Start).
 			runtime.LockOSThread()
 
 			if flagNoColor {
@@ -233,133 +240,87 @@ Zero configuration, zero wrappers, read-only.`,
 				return unsupportedPlatformError(runtime.GOOS, targetRemediation)
 			}
 
-			// Context handling SIGINT / SIGTERM
+			// Context handling SIGINT / SIGTERM. Ctrl+C ends the whole run; Esc and --duration end one pass.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			// --duration stops Specter through the same path as Ctrl+C: it cancels this context. The cause tells
-			// the closing message which of the two happened.
-			ctx, cancelRun := context.WithCancelCause(ctx)
-			defer cancelRun(nil)
-
 			res := resolver.NewDefaultResolver(nil, "")
+			pe := &passEnv{
+				cfg: runConfig{
+					Source:        flagSource,
+					Tree:          flagTree,
+					Grep:          flagGrep,
+					Duration:      flagDuration,
+					NoOutputDelay: noOutputNoticeDelay,
+				},
+				filterOpts: pipeline.FilterOptions{
+					MinLevel:   pipeline.ParseSeverity(flagLevel),
+					Grep:       flagGrep,
+					OnlyStderr: flagStderr,
+				},
+				rendererOpts: pipeline.RendererOptions{
+					NoColor:   flagNoColor,
+					Raw:       flagRaw,
+					ForceJSON: flagJSON,
+				},
+				useColor:    !flagNoColor && !color.NoColor,
+				out:         os.Stdout,
+				errOut:      os.Stderr,
+				stdoutIsTTY: term.IsTerminal(int(os.Stdout.Fd())),
+				// The picker draws on stderr. After Esc it gets a clean screen, not the logs of the last stream.
+				clearBeforePicker: term.IsTerminal(int(os.Stderr.Fd())),
+				newKeys: func() keySource {
+					// Keys are read only when Specter has the terminal; otherwise nothing about the terminal changes
+					if ui.CanReadKeys(os.Stdin, os.Stderr) {
+						return ui.NewKeyReader(os.Stdin)
+					}
+					return nil
+				},
+			}
 
-			// 1. Resolve every target before anything is attached. The first failure stops the run.
+			// The first pass follows the command line, or the picker when no target was given. After Esc, every
+			// next pass comes from the picker.
 			specs := buildTargetSpecs(args, flagPIDs)
-			var resolved []resolvedTarget
-			if len(specs) == 0 {
-				t, err := pickTarget(ctx, res)
-				if err != nil {
-					return err
-				}
-				if t == nil {
-					return nil // the picker was closed without a choice
-				}
-				resolved = []resolvedTarget{{Label: "target", Target: t}}
-			} else {
-				for _, spec := range specs {
-					t, err := resolveSpec(ctx, res, spec)
+			first := func(ctx context.Context) passResult {
+				var resolved []resolvedTarget
+				if len(specs) == 0 {
+					t, err := pickTarget(ctx, res)
+					if err != nil {
+						return passResult{err: err}
+					}
+					if t == nil {
+						return passResult{} // the picker was closed without a choice
+					}
+					resolved = []resolvedTarget{{Label: "target", Target: t}}
+				} else {
+					var err error
+					resolved, err = resolveSpecs(ctx, res, specs)
 					if err != nil {
 						// The empty-port diagnostic lists the active ports, so it is printed instead of the bare error
 						var noProcErr *resolver.NoProcessOnPortError
 						if errors.As(err, &noProcErr) {
-							fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(!flagNoColor && !color.NoColor))
-							cmd.SilenceErrors = true
-							return err
+							fmt.Fprint(os.Stderr, noProcErr.FormatDiagnostic(pe.useColor))
+							return passResult{err: err, silenceErr: true}
 						}
-						if len(specs) > 1 {
-							return fmt.Errorf("%s: %w", spec.Label, err)
-						}
-						return err
-					}
-					if t == nil {
-						return errors.New("failed to resolve target")
-					}
-					resolved = append(resolved, resolvedTarget{Label: spec.Label, Target: t})
-				}
-			}
-
-			// Discover pre-existing child processes (only for host PIDs)
-			inspector := resolver.NewProcessInspector("")
-			for _, r := range resolved {
-				if r.Target.PID > 0 {
-					if flagTree {
-						r.Target.Children = inspector.FindChildProcessTree(r.Target.PID, 3)
-					} else if kids, err := inspector.FindChildPIDs(r.Target.PID); err == nil {
-						r.Target.Children = kids
+						return passResult{err: err}
 					}
 				}
+				return runPass(ctx, resolved, pe)
+			}
+			next := func(ctx context.Context) (passResult, bool) {
+				return pickPass(ctx, func(ctx context.Context) (*source.Target, error) { return pickTarget(ctx, res) }, pe)
 			}
 
-			// 2. The same process (or container) given twice is followed once
-			resolved, dupNotices := dedupeTargets(resolved)
-			for _, n := range dupNotices {
-				printNotice(os.Stderr, n)
-			}
-			multi := len(resolved) > 1
-
-			// 3. Filter configuration, shared by all targets
-			filterOpts := pipeline.FilterOptions{
-				MinLevel:   pipeline.ParseSeverity(flagLevel),
-				Grep:       flagGrep,
-				OnlyStderr: flagStderr,
-			}
-
-			// 4. Start every session, one after the other. If one fails, the others are stopped and the run ends
-			// before any log line is printed.
-			env := newRunEnv(runConfig{
-				Source:        flagSource,
-				Tree:          flagTree,
-				Grep:          flagGrep,
-				Duration:      flagDuration,
-				NoOutputDelay: noOutputNoticeDelay,
-			}, os.Stderr, filterOpts, multi)
-			sessions := make([]*Session, len(resolved))
-			for i, r := range resolved {
-				sessions[i] = newSession(env, i, r.Label, r.Target)
-			}
-			defer func() {
-				for i := len(sessions) - 1; i >= 0; i-- {
-					sessions[i].Stop()
+			result := runLoop(ctx, first, next)
+			if result.err != nil {
+				if result.silenceErr {
+					cmd.SilenceErrors = true
 				}
-			}()
-			if err := startSessions(ctx, sessions); err != nil {
-				return err
+				return result.err
 			}
 
-			if err := sessions[0].filter.GrepError(); err != nil {
-				printNotice(os.Stderr, fmt.Sprintf("--grep %q is not a valid regular expression (%v); matching it as literal text.", flagGrep, err))
-			}
-
-			// --duration: the time starts now, when the sources have started
-			if flagDuration > 0 {
-				limit := time.AfterFunc(flagDuration, func() { cancelRun(errDurationElapsed) })
-				defer limit.Stop()
-			}
-
-			// 5. Renderer configuration
-			renderer := pipeline.NewRenderer(pipeline.RendererOptions{
-				NoColor:   flagNoColor,
-				Raw:       flagRaw,
-				ForceJSON: flagJSON,
-			})
-
-			// 6. Stream styled entries to the terminal. With several targets every line starts with its tag.
-			ow := &outputWriter{w: os.Stdout}
-			if multi {
-				labels := make([]string, len(resolved))
-				for i, r := range resolved {
-					labels[i] = r.Label
-				}
-				ow.tag = newTagger(labels, !flagNoColor && !color.NoColor)
-			}
-			anyEnded, err := runSessions(ctx, sessions, env, renderer, ow)
-			if err != nil {
-				return err
-			}
-
-			// Each session said how it ended. The exit status is 1 when a target ended on its own.
-			if anyEnded {
+			// Each session said how it ended. The exit status is 1 when a target of the last pass ended on its own.
+			if result.anyEnded {
 				cmd.SilenceErrors = true
 				return errTargetEnded
 			}

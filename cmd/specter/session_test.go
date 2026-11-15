@@ -184,7 +184,7 @@ func (h *harness) start(ctx context.Context, sessions []*Session, raw bool) <-ch
 	renderer := pipeline.NewRenderer(pipeline.RendererOptions{NoColor: true, Raw: raw})
 	done := make(chan runResult, 1)
 	go func() {
-		ended, err := runSessions(ctx, sessions, h.env, renderer, ow)
+		ended, err := runSessions(ctx, sessions, h.env, renderer, ow, nil)
 		done <- runResult{ended, err}
 	}()
 	h.t.Cleanup(func() {

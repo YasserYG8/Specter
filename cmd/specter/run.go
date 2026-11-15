@@ -117,12 +117,12 @@ func (m *merger) expire() {
 
 // runSessions is the output loop. It merges the entries of all started sessions, filters and renders them, and
 // prints each session's end report as soon as that session ends, while the others keep streaming. It returns
-// when every session has ended.
+// when every session has ended. blanks may be nil; each value on it asks for one empty line on screen.
 //
 // anyEnded is true when at least one session ended by itself (its target exited, or its source stopped), which
 // makes the exit status of Specter 1. When the only session fails with a source error, runSessions returns that
 // error instead, as a single target always did.
-func runSessions(ctx context.Context, sessions []*Session, env *runEnv, renderer *pipeline.Renderer, ow *outputWriter) (anyEnded bool, fatal error) {
+func runSessions(ctx context.Context, sessions []*Session, env *runEnv, renderer *pipeline.Renderer, ow *outputWriter, blanks <-chan struct{}) (anyEnded bool, fatal error) {
 	merged := make(chan sessionEvent)
 	for _, s := range sessions {
 		go s.forward(ctx, merged)
@@ -157,6 +157,8 @@ func runSessions(ctx context.Context, sessions []*Session, env *runEnv, renderer
 			m.accept(ev)
 		case <-m.wait():
 			m.expire()
+		case <-blanks: // the user pressed Enter; a nil channel never fires
+			ow.blank()
 		}
 	}
 	return anyEnded, fatal

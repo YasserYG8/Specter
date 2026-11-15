@@ -102,6 +102,22 @@ Running `specter` without arguments scans the system and opens an interactive te
 
 In non-interactive environments (CI, pipes, scripts), Specter automatically outputs a cleanly aligned text table.
 
+### Switching Between Servers
+
+While Specter streams in a terminal, it prints `Press Esc to pick another service, Ctrl+C to quit.` after it attaches.
+
+| Key | What it does |
+| :--- | :--- |
+| **Esc** | Detaches from every target (the same clean teardown as Ctrl+C, so no `strace` stays attached), prints the usual `Detached ... cleanly.` line for each, then erases the terminal and opens the picker at the top. The old logs are gone, also from the scrollback, as after the `clear` command (a terminal cannot erase only a part of its history, so the lines from before `specter` go too). Choose a service to stream it. Esc or `q` in the picker quits Specter. This works for `specter`, `specter 3000` and `specter 4200 8082`; the picker chooses one target. |
+| **Ctrl+C** | Quits Specter, as always. |
+| **Enter** | Adds an empty line, to space out the logs. Nothing is written when stdout is a pipe. |
+
+- `--duration` counts from the start of each stream: after Esc and a new choice, the time starts again.
+- The exit status is the one of the last stream: 1 if a target of that stream ended by itself, otherwise 0.
+- While Specter reads keys, typed text is not echoed into the log output. Arrow keys and Alt+letter are ignored; only a lone Esc counts.
+- Keys are read only when Specter has the terminal: stdin and stderr are terminals and Specter runs in the foreground. With `specter 3000 < /dev/null`, in CI, or as a background job (`specter 3000 &`), the terminal is not touched and no hint is printed. `specter 3000 | grep 500` still gets Esc, because the picker draws on stderr.
+- The terminal is given back on every exit Specter can catch (a normal end, Ctrl+C, SIGTERM, `--duration`, an error). If Specter is killed with `kill -9`, the terminal can stay without echo. It is still usable: type `stty sane` (or `reset`) to fix it.
+
 ---
 
 ## Architecture & How It Works

@@ -123,3 +123,14 @@ func (p *prefixWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
+
+// blank adds one empty line on screen, for the user who presses Enter to space out the logs. It is done here, in the
+// output loop, because the writer is not safe to use from two goroutines. A partial row of a target is closed first.
+func (o *outputWriter) blank() {
+	if o.tag != nil && o.rowOpen {
+		o.rowOpen = false
+		io.WriteString(o.w, "\n\n")
+		return
+	}
+	io.WriteString(o.w, "\n")
+}
