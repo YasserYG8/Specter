@@ -46,8 +46,8 @@ sh install.sh
 **3. A package** from the [latest release](https://github.com/YasserYG8/Specter/releases/latest) page. The packages list `strace`, `lsof` and `iproute2` as recommended packages:
 
 ```bash
-sudo apt install ./specter_0.2.0_linux_amd64.deb     # Debian, Ubuntu
-sudo dnf install ./specter_0.2.0_linux_amd64.rpm     # Fedora, RHEL
+sudo apt install ./specter_0.3.0_linux_amd64.deb     # Debian, Ubuntu
+sudo dnf install ./specter_0.3.0_linux_amd64.rpm     # Fedora, RHEL
 ```
 
 **4. With Go** (1.26 or higher):
